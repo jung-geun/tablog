@@ -19,6 +19,10 @@
 .DS_Store
 *.pem
 
+# Local Google OAuth credentials
+/client_secret_*.json
+/application_default_credentials.json
+
 # debug
 npm-debug.log*
 yarn-debug.log*

@@ -173,8 +173,8 @@ const EditorShell = ({ children }: { children: ReactNode }) => <RouteChromeProvi
 export default EditorShell
 
 const StyledWrapper = styled.div`
-  position: fixed;
-  inset: 0;
+  /* Keep the bounded shell in flow so ad SDKs can measure the page height. */
+  position: relative;
   height: 100dvh;
   display: flex;
   flex-direction: column;

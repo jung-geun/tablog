@@ -1,7 +1,7 @@
 {
   "name": "tablog",
   "description": "A VS Code-themed blog powered by Notion.",
-  "version": "1.21.16",
+  "version": "1.21.17",
   "packageManager": "yarn@1.22.22",
   "license": "MIT",
   "repository": {
