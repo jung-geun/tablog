@@ -3,6 +3,12 @@
 Tablog의 버전별 변경 이력. 프로젝트 개요는 [`../README.md`](../README.md), 셋업 가이드는 [`USAGE.md`](USAGE.md), 기능 상세는 [`FEATURES.md`](FEATURES.md)를 참고하세요.
 
 ---
+## Unreleased
+
+- 에디터 셸을 고정 위치 대신 문서 흐름의 상대 위치에 두어 `body` 높이가 0으로 측정되던 자동 광고 미노출 원인을 수정. `100dvh` 작업 공간과 Preview/Source/Split·모바일 drawer의 독립 스크롤은 유지하며, 광고 설정용 `0×0` 응답과 실제 소재 게재의 검증 기준을 구분해 문서화.
+
+---
+
 
 ## v1.21.16 — 2026-10-23
 
