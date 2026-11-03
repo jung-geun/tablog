@@ -152,3 +152,49 @@ it("offers no unsupported automatic translation and retains the article when the
   expect(create).not.toHaveBeenCalled()
   expect(title()).toBe(first.title)
 })
+
+it("keeps controls above a late anchor ad outside body and restores space after it closes", async () => {
+  let nextFrame: FrameRequestCallback | undefined
+  const raf = jest.spyOn(window, "requestAnimationFrame").mockImplementation(callback => {
+    nextFrame = callback
+    return 1
+  })
+  const ad = document.createElement("ins")
+  ad.className = "adsbygoogle adsbygoogle-noablate"
+  ad.style.position = "fixed"
+  const rect = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const bounds = this.classList.contains("document-main")
+      ? { x: 0, y: 100, width: 400, height: 600 }
+      : this === ad ? { x: 0, y: 580, width: 400, height: 220 } : { x: 0, y: 0, width: 0, height: 0 }
+    return { ...bounds, top: bounds.y, left: bounds.x, right: bounds.x + bounds.width, bottom: bounds.y + bounds.height, toJSON: () => bounds }
+  })
+  const flush = async () => {
+    await act(async () => { await Promise.resolve() })
+    const callback = nextFrame
+    nextFrame = undefined
+    act(() => callback?.(0))
+  }
+  try {
+    await render()
+    await flush()
+    const overlay = document.querySelector<HTMLElement>(".translation-overlay")!
+    expect(overlay.style.bottom).toBe("8px")
+    // AdSense appends its served anchor beside body, directly under html.
+    document.documentElement.append(ad)
+    await flush()
+    expect(overlay.style.bottom).toBe("128px")
+    ad.style.position = "static"
+    await flush()
+    expect(overlay.style.bottom).toBe("8px")
+    ad.style.position = "fixed"
+    await flush()
+    expect(overlay.style.bottom).toBe("128px")
+    ad.remove()
+    await flush()
+    expect(overlay.style.bottom).toBe("8px")
+  } finally {
+    ad.remove()
+    rect.mockRestore()
+    raf.mockRestore()
+  }
+})
