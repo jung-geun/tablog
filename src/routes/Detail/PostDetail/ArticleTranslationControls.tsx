@@ -39,6 +39,62 @@ const ArticleTranslationControls = forwardRef<ArticleTranslationHandle, Props>((
   const target = useRef<HTMLInputElement>(null)
   const restoreTriggerFocus = useRef(false)
   const closePanel = useCallback(() => { restoreTriggerFocus.current = true; setOpen(false) }, [])
+  useEffect(() => {
+    const overlay = root.current
+    const main = overlay?.parentElement
+    if (!overlay || !main) return
+    let frame = 0
+    // Read host-side ad geometry only; never access ad frames or alter served ads.
+    const update = () => {
+      frame = 0
+      const bounds = main.getBoundingClientRect()
+      let bottom = bounds.bottom
+      for (const ad of document.querySelectorAll<HTMLElement>("ins.adsbygoogle")) {
+        if (!ad.getBoundingClientRect().height) continue
+        for (let host: HTMLElement | null = ad; host && host !== document.body; host = host.parentElement) {
+          if (getComputedStyle(host).position !== "fixed") continue
+          resize?.observe(host)
+          const rect = host.getBoundingClientRect()
+          if (rect.width > 0 && rect.height > 0 && rect.left < bounds.right && rect.right > bounds.left
+            && rect.top >= bounds.top && rect.top < bottom && rect.bottom >= bounds.bottom) bottom = rect.top
+          break
+        }
+      }
+      const inset = `${Math.max(8, bounds.bottom - bottom + 8)}px`
+      if (overlay.style.bottom !== inset) overlay.style.bottom = inset
+    }
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(update)
+    }
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule)
+    const adChanges = new MutationObserver(schedule)
+    const discoverAds = () => {
+      adChanges.disconnect()
+      resize?.disconnect()
+      resize?.observe(main)
+      for (const ad of document.querySelectorAll<HTMLElement>("ins.adsbygoogle")) {
+        resize?.observe(ad)
+        for (let host: HTMLElement | null = ad; host && host !== document.body && host !== document.documentElement; host = host.parentElement) {
+          adChanges.observe(host, { attributes: true, attributeFilter: ["style", "class", "data-anchor-status"] })
+        }
+      }
+    }
+    // Served anchors are inserted directly under html or body. Article progress
+    // and translation motion must not trigger ad discovery or geometry reads.
+    const mutations = new MutationObserver(() => { discoverAds(); schedule() })
+    mutations.observe(document.documentElement, { childList: true })
+    mutations.observe(document.body, { childList: true })
+    discoverAds()
+    window.addEventListener("resize", schedule)
+    update()
+    return () => {
+      cancelAnimationFrame(frame)
+      resize?.disconnect()
+      adChanges.disconnect()
+      mutations.disconnect()
+      window.removeEventListener("resize", schedule)
+    }
+  }, [])
   useLayoutEffect(() => {
     if (!open && restoreTriggerFocus.current) {
       restoreTriggerFocus.current = false
@@ -88,6 +144,10 @@ const ArticleTranslationControls = forwardRef<ArticleTranslationHandle, Props>((
     targetName = new Intl.DisplayNames([props.browserLanguage || "en"], { type: "language" }).of(targetName) || targetName
   } catch { /* Keep an incomplete language input literal until validation succeeds. */ }
   return <Controls ref={root} className="translation-overlay" data-open={open || undefined} aria-label="Article translation">
+    <button ref={trigger} type="button" className="translation-trigger" aria-label="Article language and translation" title={props.busy ? props.status : "Article language and translation"} aria-expanded={open} aria-controls={open ? `${id}-panel` : undefined} aria-haspopup="dialog" onClick={() => { setDismissed(true); setOpen(value => !value) }}>
+      <VscGlobe size={21} aria-hidden="true" />
+      {(props.busy || props.hasTranslation) && <span className="language-badge">{props.busy && props.total ? `${props.completed}/${props.total}` : props.targetLanguage.split("-")[0].toUpperCase()}</span>}
+    </button>
     {!open && !dismissed && props.suggestTranslation && !props.busy && !props.hasTranslation && <div className="translation-suggestion">
       <button type="button" className="suggestion-action" onClick={() => { setDismissed(true); setOpen(true) }}>Read this article in {targetName}?</button>
       <button type="button" className="icon-button" aria-label="Dismiss translation suggestion" onClick={() => setDismissed(true)}><VscClose aria-hidden="true" /></button>
@@ -120,10 +180,6 @@ const ArticleTranslationControls = forwardRef<ArticleTranslationHandle, Props>((
       {props.status && <p className="panel-status">{props.status}</p>}
       {props.error && <p className="translation-error">{props.error}</p>}
     </section>}
-    <button ref={trigger} type="button" className="translation-trigger" aria-label="Article language and translation" title={props.busy ? props.status : "Article language and translation"} aria-expanded={open} aria-controls={open ? `${id}-panel` : undefined} aria-haspopup="dialog" onClick={() => { setDismissed(true); setOpen(value => !value) }}>
-      <VscGlobe size={21} aria-hidden="true" />
-      {(props.busy || props.hasTranslation) && <span className="language-badge">{props.busy && props.total ? `${props.completed}/${props.total}` : props.targetLanguage.split("-")[0].toUpperCase()}</span>}
-    </button>
     <span className="translation-live" role="status" aria-live="polite" aria-atomic="true">{props.status}</span>
     <span className="translation-live" role="alert">{props.error}</span>
   </Controls>
@@ -140,7 +196,7 @@ const Controls = styled.section`
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
   min-width: 0;
   min-height: 0;
@@ -178,7 +234,7 @@ const Controls = styled.section`
   .panel-status { margin-top: 10px; }
   progress { display: block; width: 100%; height: 7px; accent-color: ${({ theme }) => theme.colors.editor.accent}; }
   .translation-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  @keyframes language-panel-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  @keyframes language-panel-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .translation-panel { animation: none; } }
   @container article-document (max-width: 320px) { .translation-languages { grid-template-columns: minmax(0, 1fr); } .translation-panel { padding: 12px; } }
   @container article-document (max-height: 180px) {

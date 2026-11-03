@@ -65,7 +65,7 @@ The initial HTML includes the real Notion article. Source lazily loads original 
 Preview, Source, Outline, and panels scroll independently within a viewport-bounded shell. Tables export as GFM Markdown; wide tables and code/source use local horizontal scrolling. Narrow editor widths place Outline above the article and switch between Preview/Source panes.
 
 ### Explicit, on-device translation
-The globe inside the article's bottom-right corner and **Translate: Article language…** in Quick Pick open the same controls. Translation uses the browser's **Translator API**, without assuming a particular model or calling a cloud fallback. Supported non-Korean browser locales receive a suggestion, never automatic translation; model download and sentence-by-sentence translation require the reader's request.
+The globe inside the article's top-right corner and **Translate: Article language…** in Quick Pick open the same controls. Translation uses the browser's **Translator API**, without assuming a particular model or calling a cloud fallback. Supported non-Korean browser locales receive a suggestion, never automatic translation; model download and sentence-by-sentence translation require the reader's request.
 
 Preview, Source, Outline, and heading search share one translated snapshot. Cancel keeps completed passages; Restore original restores the original document. Code, equations, and link destinations are preserved. Short text-recomposition motion is skipped during selection or reduced motion. **Markdown copy/download and public `.md` exports always remain original.**
 
