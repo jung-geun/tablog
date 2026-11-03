@@ -47,7 +47,7 @@
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0",
     "dotenv": "^17.2.3",
-    "ioredis": "^5.4.0",
+    "ioredis": "^6.0.0",
     "katex": "^0.16.25",
     "lru-cache": "^11.3.6",
     "mermaid": "^11.16.1",
