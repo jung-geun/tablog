@@ -52,7 +52,7 @@
     "lru-cache": "^11.3.6",
     "mermaid": "^11.16.1",
     "motion": "12.27.0",
-    "next": "^16.3.3",
+    "next": "^16.4.1",
     "notion-types": "^7.10.0",
     "notion-utils": "^7.10.0",
     "prismjs": "^1.30.0",
