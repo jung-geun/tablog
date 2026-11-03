@@ -62,7 +62,7 @@
     "react-notion-x": "^7.10.0",
     "tailwind-merge": "3.7.0",
     "three": "^0.186.1",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "resolutions": {
     "@babel/core": "^7.29.7",
