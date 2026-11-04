@@ -8,6 +8,7 @@ const retrieveBlock = jest.fn()
 const listChildren = jest.fn()
 const retrievePage = jest.fn()
 let cached: ExtendedRecordMap | null = null
+const fetchMock = jest.fn()
 jest.mock("src/apis/notion-client/notionClient", () => ({
   getOfficialNotionClient: () => ({
     pages: { retrieve: retrievePage },
@@ -21,9 +22,10 @@ jest.mock("src/libs/cache", () => ({
 }))
 jest.mock("site.config", () => ({ CONFIG: { link: "https://blog.example.com", revalidateTime: 3600 } }))
 jest.mock("src/libs/utils/logger", () => ({ debugLog: jest.fn() }))
+jest.mock("src/libs/utils/notion/fetchOgMetadata", () => ({ getOgMetadata: jest.fn(async () => null) }))
 
 import { getRecordMap } from "src/apis/notion-client/getRecordMap"
-import handler from "src/pages/api/attachment"
+import handler, { __clearEmbedBodyCacheForTests } from "src/pages/api/attachment"
 import { readStoredContent } from "src/libs/content/storage"
 import { readContentRecordMap } from "src/libs/content/registry"
 import { unwrapBlock } from "src/libs/utils/notion/unwrapBlock"
@@ -36,8 +38,25 @@ const EDITED = "2026-06-01T12:00:00.000Z"
 const normalized = (id: string) => id.replace(/-/g, "")
 const signed = (signature: string, filename = "report.pdf") =>
   `https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/${filename}?X-Amz-Signature=${signature}&X-Amz-Expires=60`
+function s3Body(text: string, init: { status?: number; contentLength?: string } = {}): Response {
+  const headers: Record<string, string> = { "content-type": "binary/octet-stream" }
+  if (init.contentLength !== undefined) headers["content-length"] = init.contentLength
+  return new Response(text, { status: init.status ?? 200, headers })
+}
 type AttachmentType = "file" | "pdf" | "video" | "audio"
-function upload(type: AttachmentType = "file", overrides: Record<string, unknown> = {}) {
+type BlockFixture = {
+  object: string
+  id: string
+  type: string
+  archived: boolean
+  in_trash: boolean
+  has_children: boolean
+  parent: { type: string; page_id?: string; block_id?: string }
+  created_time: string
+  last_edited_time: string
+  [key: string]: unknown
+}
+function upload(type: AttachmentType = "file", overrides: Record<string, unknown> = {}): BlockFixture {
   return {
     object: "block", id: BLOCK, type, archived: false, in_trash: false, has_children: false,
     parent: { type: "page_id", page_id: PAGE }, created_time: EDITED, last_edited_time: EDITED,
@@ -45,7 +64,16 @@ function upload(type: AttachmentType = "file", overrides: Record<string, unknown
     ...overrides,
   }
 }
-async function body(blocks = [upload()]): Promise<ExtendedRecordMap> {
+type FileEmbedType = "embed" | "link_preview"
+function fileEmbed(type: FileEmbedType = "embed", url = signed("expired", "diagram.html"), overrides: Record<string, unknown> = {}): BlockFixture {
+  return {
+    object: "block", id: BLOCK, type, archived: false, in_trash: false, has_children: false,
+    parent: { type: "page_id", page_id: PAGE }, created_time: EDITED, last_edited_time: EDITED,
+    [type]: type === "embed" ? { url, caption: [] } : { url },
+    ...overrides,
+  }
+}
+async function body(blocks: BlockFixture[] = [upload()]): Promise<ExtendedRecordMap> {
   listChildren.mockResolvedValueOnce({ results: blocks, has_more: false })
   const map = await getRecordMap(PAGE, undefined, { bypassCache: true, lastEditedTime: EDITED })
   if (!map) throw new Error("Fixture body not returned")
@@ -58,10 +86,11 @@ function publish(map: ExtendedRecordMap) {
 }
 async function request(query: Record<string, string | string[]> = { pageId: PAGE, blockId: BLOCK }, method = "GET") {
   const response = {
-    statusCode: 200, headers: {} as Record<string, string>, ended: false,
+    statusCode: 200, headers: {} as Record<string, string>, ended: false, sent: undefined as unknown,
     setHeader(key: string, value: string) { this.headers[key.toLowerCase()] = value; return this },
     status(code: number) { this.statusCode = code; return this },
     end() { this.ended = true; return this },
+    send(payload: unknown) { this.sent = payload; this.ended = true; return this },
   }
   await handler({ method, query } as unknown as NextApiRequest, response as unknown as NextApiResponse)
   return response
@@ -72,7 +101,10 @@ beforeEach(() => {
   retrieveBlock.mockReset()
   listChildren.mockReset()
   retrievePage.mockReset()
+  fetchMock.mockReset()
+  global.fetch = fetchMock as unknown as typeof fetch
   ;(readStoredContent as jest.Mock).mockReset()
+  __clearEmbedBodyCacheForTests()
   cached = null
   retrievePage.mockResolvedValue({
     object: "page", id: PAGE, archived: false, in_trash: false, created_time: EDITED, last_edited_time: EDITED,
@@ -191,4 +223,188 @@ test("upstream outages and partial SDK responses fail 503 without mutating the p
   expect(JSON.stringify(await readContentRecordMap(PAGE))).toBe(before)
   retrieveBlock.mockRejectedValueOnce({ code: "object_not_found" })
   expect((await request()).statusCode).toBe(404)
+})
+
+test.each<FileEmbedType>(["embed", "link_preview"])("a Notion-hosted file %s renders as a proxied iframe with filename caption", async (type) => {
+  const map = await body([fileEmbed(type, signed("expired", "openstack-compute-removal-flow.html"))])
+  const value = unwrapBlock(map.block[BLOCK])!
+  expect(value.type).toBe("embed")
+  const source = value.properties?.source?.[0]?.[0]
+  const url = new URL(source!)
+  expect(url.origin).toBe("https://blog.example.com")
+  expect(url.pathname).toBe("/api/attachment")
+  expect(url.searchParams.get("pageId")).toBe(PAGE)
+  expect(url.searchParams.get("blockId")).toBe(BLOCK)
+  expect(url.searchParams.get("filename")).toBe("openstack-compute-removal-flow.html")
+  expect(source).not.toContain("expired")
+  expect(value.format?.display_source).toBe(source)
+  expect(value.format?.block_height).toBe(480)
+  expect(value.properties?.caption).toEqual([["openstack-compute-removal-flow.html"]])
+})
+
+test("an explicit file-embed caption wins over the filename fallback", async () => {
+  const caption = [{ type: "text", text: { content: "Custom caption" } }]
+  const map = await body([fileEmbed("embed", signed("expired", "diagram.html"), { embed: { url: signed("expired", "diagram.html"), caption } })])
+  expect(unwrapBlock(map.block[BLOCK])?.properties?.caption).toEqual([["Custom caption"]])
+})
+
+test("untrusted embeds still degrade to bookmark cards", async () => {
+  const map = await body([fileEmbed("embed", "https://evil.test/diagram.html")])
+  const value = unwrapBlock(map.block[BLOCK])!
+  expect(value.type).toBe("bookmark")
+  expect(value.properties?.link).toEqual([["https://evil.test/diagram.html"]])
+  expect(value.properties?.source).toBeUndefined()
+})
+
+test("allowlisted embeds keep direct iframe URLs without proxying", async () => {
+  const youtube = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  const map = await body([fileEmbed("embed", youtube)])
+  const value = unwrapBlock(map.block[BLOCK])!
+  expect(value.type).toBe("embed")
+  expect(value.properties?.source).toEqual([[youtube]])
+  expect(value.format?.display_source).toBe(youtube)
+})
+
+test("a published file embed proxies bytes as sandboxed HTML", async () => {
+  const map = await body([fileEmbed("embed")])
+  publish(map)
+  const source = unwrapBlock(map.block[BLOCK])?.properties?.source?.[0]?.[0]
+  const fresh = signed("fresh", "diagram.html")
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", fresh))
+  fetchMock.mockResolvedValueOnce(s3Body("<html>diagram</html>"))
+  const res = await request(Object.fromEntries(new URL(source!).searchParams))
+  expect(fetchMock).toHaveBeenCalledWith(fresh, expect.objectContaining({ redirect: "manual" }))
+  expect(res.statusCode).toBe(200)
+  expect(res.headers.location).toBeUndefined()
+  expect(res.headers["content-type"]).toBe("text/html; charset=utf-8")
+  expect(res.headers["content-security-policy"]).toBe("sandbox allow-scripts")
+  expect(res.headers["x-content-type-options"]).toBe("nosniff")
+  expect(res.headers["content-disposition"]).toBe('inline; filename="diagram.html"')
+  expect(res.headers["content-length"]).toBe(String("<html>diagram</html>".length))
+  expect(res.headers["cache-control"]).toBe("public, max-age=300")
+  expect(Buffer.from(res.sent as Uint8Array).toString()).toBe("<html>diagram</html>")
+  expect(res.ended).toBe(true)
+})
+
+test("a link_preview file upload resolves through the published embed", async () => {
+  const map = await body([fileEmbed("link_preview")])
+  expect(unwrapBlock(map.block[BLOCK])?.type).toBe("embed")
+  publish(map)
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("link_preview", signed("fresh", "diagram.html")))
+  fetchMock.mockResolvedValueOnce(s3Body("<html>diagram</html>"))
+  const source = unwrapBlock(map.block[BLOCK])?.properties?.source?.[0]?.[0]
+  const res = await request(Object.fromEntries(new URL(source!).searchParams))
+  expect(res.statusCode).toBe(200)
+  expect(res.headers["content-type"]).toBe("text/html; charset=utf-8")
+  expect(Buffer.from(res.sent as Uint8Array).toString()).toBe("<html>diagram</html>")
+})
+
+test("a file embed answers HEAD with headers and no body", async () => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "diagram.html")))
+  fetchMock.mockResolvedValueOnce(s3Body("<html>diagram</html>"))
+  const res = await request({ pageId: PAGE, blockId: BLOCK, filename: "diagram.html" }, "HEAD")
+  expect(res.statusCode).toBe(200)
+  expect(res.headers["content-type"]).toBe("text/html; charset=utf-8")
+  expect(res.sent).toBeUndefined()
+  expect(res.ended).toBe(true)
+})
+
+test("a proxied PDF embed keeps its inline content type", async () => {
+  publish(await body([fileEmbed("embed", signed("expired", "slides.pdf"))]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "slides.pdf")))
+  fetchMock.mockResolvedValueOnce(s3Body("%PDF-1.4"))
+  const res = await request({ pageId: PAGE, blockId: BLOCK, filename: "slides.pdf" })
+  expect(res.statusCode).toBe(200)
+  expect(res.headers["content-type"]).toBe("application/pdf")
+  expect(res.headers["content-disposition"]).toBe('inline; filename="slides.pdf"')
+})
+
+test("a hostile filename never escapes the disposition header", async () => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "diagram.html")))
+  fetchMock.mockResolvedValueOnce(s3Body("<html>diagram</html>"))
+  const res = await request({ pageId: PAGE, blockId: BLOCK, filename: "../../x.html\"\r\nInjected: 1" })
+  expect(res.statusCode).toBe(200)
+  expect(res.headers["content-type"]).toBe("application/octet-stream")
+  expect(res.headers["content-disposition"] ?? "").not.toContain("\r")
+  expect(res.headers["content-disposition"] ?? "").not.toContain("\n")
+  expect(res.headers["content-disposition"] ?? "").not.toContain('"Injected')
+})
+
+test("a Korean filename stays ASCII-only via RFC 5987", async () => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "diagram.html")))
+  fetchMock.mockResolvedValueOnce(s3Body("<html>diagram</html>"))
+  const res = await request({ pageId: PAGE, blockId: BLOCK, filename: "\ub2e4\uc774\uc5b34\uadf8\ub7a8.html" })
+  expect(res.statusCode).toBe(200)
+  expect(res.headers["content-type"]).toBe("text/html; charset=utf-8")
+  const disposition = res.headers["content-disposition"] ?? ""
+  expect(disposition).toContain("filename*=UTF-8''")
+  expect(disposition).toContain(encodeURIComponent("\ub2e4\uc774\uc5b34\uadf8\ub7a8.html"))
+  expect([...disposition].every((ch) => ch.charCodeAt(0) <= 0x7e)).toBe(true)
+})
+
+test("a repeated file embed serves from cache without Notion or S3", async () => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "diagram.html")))
+  fetchMock.mockResolvedValueOnce(s3Body("<html>cached</html>"))
+  const query = { pageId: PAGE, blockId: BLOCK, filename: "diagram.html" }
+  const first = await request(query)
+  expect(first.statusCode).toBe(200)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(retrieveBlock).toHaveBeenCalledTimes(1)
+  const second = await request(query)
+  expect(second.statusCode).toBe(200)
+  expect(second.headers["cache-control"]).toBe("public, max-age=300")
+  expect(Buffer.from(second.sent as Uint8Array).toString()).toBe("<html>cached</html>")
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(retrieveBlock).toHaveBeenCalledTimes(1)
+})
+
+test("an embed body over the cache cap still serves but is not cached", async () => {
+  publish(await body([fileEmbed("embed")]))
+  const big = "a".repeat(1024 * 1024 + 16)
+  const query = { pageId: PAGE, blockId: BLOCK, filename: "big.html" }
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "big.html")))
+  fetchMock.mockResolvedValueOnce(s3Body(big))
+  const first = await request(query)
+  expect(first.statusCode).toBe(200)
+  expect(first.headers["content-length"]).toBe(String(big.length))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "big.html")))
+  fetchMock.mockResolvedValueOnce(s3Body(big))
+  const second = await request(query)
+  expect(second.statusCode).toBe(200)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+})
+
+test.each([
+  ["an upstream outage", () => fetchMock.mockRejectedValueOnce(new Error("S3 unavailable"))],
+  ["an error status", () => fetchMock.mockResolvedValueOnce(s3Body("denied", { status: 403 }))],
+  ["an empty body", () => fetchMock.mockResolvedValueOnce(s3Body(""))],
+  ["an oversized declaration", () => fetchMock.mockResolvedValueOnce(s3Body("tiny", { contentLength: String(6 * 1024 * 1024) }))],
+])("fails 503 without a redirect when the embed fetch hits %s", async (_case, arrange) => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", signed("fresh", "diagram.html")))
+  arrange()
+  const res = await request()
+  expect(res.statusCode).toBe(503)
+  expect(res.headers.location).toBeUndefined()
+  expect(res.sent).toBeUndefined()
+})
+
+test("rejects a file embed whose live URL left Notion hosting", async () => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(fileEmbed("embed", "https://evil.test/diagram.html"))
+  const res = await request()
+  expect(res.statusCode).toBe(503)
+  expect(res.headers.location).toBeUndefined()
+})
+
+test("rejects a published embed that is no longer an embed", async () => {
+  publish(await body([fileEmbed("embed")]))
+  retrieveBlock.mockResolvedValueOnce(upload("file"))
+  const res = await request()
+  expect(res.statusCode).toBe(404)
+  expect(res.headers.location).toBeUndefined()
 })

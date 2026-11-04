@@ -176,3 +176,23 @@ export function isValidNotionId(value: string): boolean {
   const uuidWithoutDashes = /^[0-9a-fA-F]{32}$/
   return uuidWithoutDashes.test(trimmed)
 }
+
+/**
+ * True only for Notion's own file hosts (official SDK `file.url` values).
+ * Used both when translating embed blocks and when validating the
+ * `/api/attachment` redirect target, so the trust boundary stays in one place.
+ */
+export function isTrustedNotionFileUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== "https:" || url.port) return false
+    // Reject any userinfo in the authority section without reading URL credential fields.
+    const authority = url.href.slice(url.protocol.length + 2).split(/[/?#]/, 1)[0]
+    if (authority.includes("@")) return false
+    return /^prod-files-secure\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/.test(url.hostname)
+      || url.hostname === "secure.notion-static.com"
+      || (url.hostname === "s3.us-west-2.amazonaws.com" && url.pathname.startsWith("/secure.notion-static.com/"))
+  } catch {
+    return false
+  }
+}

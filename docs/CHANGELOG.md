@@ -2,6 +2,10 @@
 
 Tablog의 버전별 변경 이력. 프로젝트 개요는 [`../README.md`](../README.md), 셋업 가이드는 [`USAGE.md`](USAGE.md), 기능 상세는 [`FEATURES.md`](FEATURES.md)를 참고하세요.
 
+## v1.21.19 — 2026-11-04
+
+- Notion에 업로드한 `.html` 다이어그램 등 Embed 블록의 파일 업로드가 빈 북마크 카드 대신 본문 안에서 바로 렌더됩니다. Notion 호스트 URL은 `/api/attachment` 경유의 iframe으로 변환하고, 요청마다 공개 페이지·블록을 검증한 뒤 통과한 작은 본문은 최대 5분간 프로세스 내 캐시와 `public, max-age=300`으로 서빙해 매 조회마다 Notion·S3를 다시 때리지 않습니다(리다이렉트·오류 응답은 `no-store` 유지). S3가 `binary/octet-stream`으로 내려 만료·다운로드되던 응답을 파일명 기준 표시 타입(`text/html` 등)으로 재표기하고 `sandbox allow-scripts`·`nosniff`로 격리해 스크립트는 동작하되 블로그 저장소·쿠키·부모 프레임에는 접근할 수 없습니다. 비ASCII 파일명은 RFC 5987로 인코딩해 헤더 오류 없이 표시합니다. 허용 목록 밖의 일반 외부 URL은 기존처럼 북마크 카드로 유지됩니다. 변환 캐시는 `recordMap:v10`이며, 기존 글은 정상 변경 동기화 또는 인증된 `Authorization: Bearer` `/api/revalidate?path=/slug`로 본문을 재확인해야 적용됩니다.
+
 ---
 ## v1.21.18 — 2026-11-04
 

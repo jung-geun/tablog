@@ -5,7 +5,8 @@ const DB_VERSION = "v6"
 // (e.g. new mention decorations, new format fields) so existing recordMap
 // caches are invalidated and re-fetched with the new translator.
 // v9 preserves heading 4, toggle-heading children, and column width ratios.
-const RM_VERSION = "v9"
+// v10 renders Notion-hosted file embeds (e.g. uploaded `.html`) as proxied iframes.
+const RM_VERSION = "v10"
 // Bump NG_VERSION when NotionGraph schema changes (e.g. new edge types, node fields)
 // so cached graphs are discarded and rebuilt with the new shape.
 const NG_VERSION = "v4"

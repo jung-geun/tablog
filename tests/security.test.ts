@@ -3,7 +3,7 @@
  */
 
 import type { NextApiRequest } from "next"
-import { getInternalOrigin, getIp, isRequestOriginAllowed } from "src/libs/utils/security"
+import { getInternalOrigin, getIp, isRequestOriginAllowed, isTrustedNotionFileUrl } from "src/libs/utils/security"
 import { getRequestIp } from "src/libs/utils/image/proxyServer"
 
 const REMOTE_ADDRESS = "172.18.0.2"
@@ -143,5 +143,34 @@ describe("getIp", () => {
     const req = request({ "x-forwarded-for": "198.51.100.10", "x-monolog-proxy-secret": "proxy-secret" })
 
     expect(getRequestIp(req)).toBe(getIp(req))
+  })
+})
+
+describe("isTrustedNotionFileUrl", () => {
+  it.each([
+    "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/diagram.html?X-Amz-Signature=abc",
+    "https://prod-files-secure.s3.amazonaws.com/bucket/file.pdf",
+    "https://secure.notion-static.com/file.pdf",
+    "https://s3.us-west-2.amazonaws.com/secure.notion-static.com/file.pdf",
+  ])("trusts Notion file host: %s", (url) => {
+    expect(isTrustedNotionFileUrl(url)).toBe(true)
+  })
+
+  const userinfoTarget = new URL("https://secure.notion-static.com/file.pdf")
+  userinfoTarget.username = "example-user"
+
+  it.each([
+    "http://prod-files-secure.s3.us-west-2.amazonaws.com/file.pdf",
+    "https://prod-files-secure.s3.us-west-2.amazonaws.com.evil.test/file.pdf",
+    "https://unrelated.s3.amazonaws.com/file.pdf",
+    "https://s3.us-west-2.amazonaws.com/other-bucket/file.pdf",
+    // Explicit default :443 normalizes away per URL spec (same endpoint),
+    // so only a non-default port is a meaningful rejection case here.
+    "https://prod-files-secure.s3.us-west-2.amazonaws.com:8443/file.pdf",
+    userinfoTarget.toString(),
+    "https://evil.test/diagram.html",
+    "not-a-url",
+  ])("rejects untrusted target: %s", (url) => {
+    expect(isTrustedNotionFileUrl(url)).toBe(false)
   })
 })
