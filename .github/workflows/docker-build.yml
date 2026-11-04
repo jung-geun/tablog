@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       image-tag:
-        description: Published image tag to stage on the trusted deployment daemon
+        description: Published image tag to pull, verify, and export as a transfer artifact
         required: true
         default: latest
         type: string
@@ -120,8 +120,12 @@ jobs:
         run: echo "Pushed tags ${{ steps.tags.outputs.value }}"
 
   stage-for-deployment:
+    # ARC runners are ephemeral pods with their own DinD sidecar: a pull alone
+    # would vanish with the pod. Export verified images as an artifact the
+    # operator loads onto the production daemon (which holds no GHCR credentials).
     if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: monolog-arc
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: read
@@ -133,7 +137,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Stage published images on the deployment daemon
+      - name: Pull and verify published images
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
@@ -141,5 +145,24 @@ jobs:
             IMAGE="${REGISTRY}/${IMAGE_NAME}${SUFFIX}"
             docker pull "${IMAGE}:${IMAGE_TAG}"
             docker image inspect "${IMAGE}:${IMAGE_TAG}" --format '{{.Id}} {{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
-            docker tag "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:latest"
+            docker image inspect "${IMAGE}:${IMAGE_TAG}" --format '{{json .RepoDigests}}'
           done
+
+      - name: Export images for transfer
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          mkdir -p /tmp/stage
+          for SUFFIX in '' '-embedding'; do
+            IMAGE="${REGISTRY}/${IMAGE_NAME}${SUFFIX}"
+            NAME="$(echo "${IMAGE_NAME}${SUFFIX}" | tr '/' '-')"
+            docker save "${IMAGE}:${IMAGE_TAG}" | gzip > "/tmp/stage/${NAME}-${IMAGE_TAG}.tar.gz"
+          done
+          (cd /tmp/stage && sha256sum ./*.tar.gz | tee SHA256SUMS)
+
+      - name: Upload staged images
+        uses: actions/upload-artifact@v7
+        with:
+          name: tablog-images-${{ inputs.image-tag }}
+          path: /tmp/stage/
+          retention-days: 7

@@ -489,22 +489,30 @@ CI는 `yarn test`와 별도 `yarn build`를 실행합니다. 현재 lint·type-c
 
 ### 수동 CI runner 선택
 
-`Test Suite`의 일반 push·PR 검사와 수동 실행 기본값은 GitHub hosted `ubuntu-latest`를 사용합니다. Hosted runner를 확보할 수 없을 때는 수동 실행에서만 기존 `self-hosted`·`Linux`·`X64` runner를 선택할 수 있습니다.
+`Test Suite`의 일반 push·PR 검사와 수동 실행 기본값은 GitHub hosted `ubuntu-latest`를 사용합니다. Hosted runner를 확보할 수 없을 때는 수동 실행에서만 ARC 스케일셋 `monolog-arc`를 선택할 수 있습니다. 기존 `self-hosted`·`Linux`·`X64` 러너는 오프라인이며 더 이상 사용하지 않습니다.
 
 ```bash
-gh workflow run test.yml --ref main -f runner=self-hosted
+gh workflow run test.yml --ref main -f runner=monolog-arc
 ```
 
-`--ref`에는 검증할 저장소 브랜치·태그를 지정합니다. Self-hosted 경로는 Node.js 설치 후 Corepack으로 `package.json`의 `packageManager`에 선언된 Yarn을 활성화하고 동일한 테스트·빌드를 실행합니다. 해당 호스트에서 프로젝트 코드가 실행되므로 신뢰하는 브랜치만 수동으로 선택하세요.
+`--ref`에는 검증할 저장소 브랜치·태그를 지정합니다. ARC 경로는 Node.js 설치 후 Corepack으로 `package.json`의 `packageManager`에 선언된 Yarn을 활성화하고 동일한 테스트·빌드를 실행합니다. 해당 러너에서 프로젝트 코드가 실행되므로 신뢰하는 브랜치만 수동으로 선택하세요.
 
 웹·임베딩 이미지의 일반 main/tag 빌드는 GitHub hosted `ubuntu-latest`에서 선언된 `linux/amd64` 대상으로 수행합니다. 게시에 사용하는 공개 build args는 운영에서 검증한 사이트 주소·댓글·광고 설정·재검증 주기와 맞추고 비밀값은 넣지 않습니다. 이미지 게시 자체는 운영 컨테이너 교체가 아닙니다.
 
-아래 수동 staging 작업은 기존 self-hosted Docker 데몬에 이미지를 적재하는 별도 경로이며, 다른 호스트의 Docker context를 자동 갱신하지 않습니다. 운영 호스트를 이전했다면 기존 writer와 볼륨을 보존하고 실제 대상 데몬·Compose 프로젝트를 확인한 뒤, 검증한 이미지의 digest 또는 레이어·설정 동일성을 확인해 이전합니다. 오프라인 self-hosted runner를 이전 운영 호스트와 혼동해 다시 시작하지 않습니다.
+아래 수동 staging 작업은 ARC ephemeral 러너에서 게시 이미지를 pull·검증한 뒤 전송용 artifact로 export하는 별도 경로이며, 운영 데몬에 직접 적재하지 않습니다. 운영 호스트를 이전했다면 기존 writer와 볼륨을 보존하고 실제 대상 데몬·Compose 프로젝트를 확인한 뒤, 검증한 이미지의 digest 또는 레이어·설정 동일성을 확인해 이전합니다.
 
-운영 호스트가 비공개 GHCR 이미지를 직접 pull할 인증이 없으면, 같은 Docker 데몬을 공유하는 신뢰된 self-hosted runner에서 기존 `GHCR_TOKEN`으로 게시 이미지만 적재합니다. 토큰을 호스트나 로그에 내보내지 않으며 패키지를 공개로 바꾸지 않습니다. 아래 수동 경로는 재빌드 없이 두 이미지의 지정 태그를 pull하고 로컬 `latest`로 지정합니다. 이후 Compose에서 `--no-build --pull never --no-deps`로 필요한 서비스만 시작합니다.
+운영 호스트가 비공개 GHCR 이미지를 직접 pull할 인증이 없으므로, `GHCR_TOKEN`을 가진 staging 잡에서 게시 이미지만 export합니다. 토큰을 호스트나 로그에 내보내지 않으며 패키지를 공개로 바꾸지 않습니다. 아래 수동 경로는 재빌드 없이 두 이미지의 지정 태그를 pull·검증하고 `*.tar.gz`+`SHA256SUMS` artifact로 올립니다. artifact를 내려받아 체크섬을 확인한 뒤 운영 데몬에서 `docker load`하고, Compose에서는 `--no-build --pull never --no-deps`로 필요한 서비스만 시작합니다.
 
 ```bash
 gh workflow run docker-build.yml --ref main -f image-tag=검증한-게시-태그
+```
+
+staging 잡이 올린 artifact는 이름이 `tablog-images-<태그>`이며 7일 보관됩니다. 운영 데몬이 있는 곳에서 내려받아 체크섬을 확인한 뒤 `docker load`합니다.
+
+```bash
+gh run download <staging-run-id> -n tablog-images-검증한-게시-태그 -D /tmp/tablog-stage
+(cd /tmp/tablog-stage && sha256sum -c SHA256SUMS)
+for f in /tmp/tablog-stage/*.tar.gz; do gunzip -c "$f" | docker load; done
 ```
 
 

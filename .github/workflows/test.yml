@@ -14,7 +14,7 @@ on:
         default: hosted
         options:
           - hosted
-          - self-hosted
+          - monolog-arc
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ permissions:
 jobs:
   test:
     name: Run Tests
-    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted' && '["self-hosted","Linux","X64"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner == 'monolog-arc' && '["monolog-arc"]' || '["ubuntu-latest"]') }}
 
     strategy:
       matrix:
@@ -36,10 +36,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
-          cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.runner != 'self-hosted') && 'yarn' || '' }}
+          cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.runner != 'monolog-arc') && 'yarn' || '' }}
 
       - name: Enable declared Yarn
-        if: github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted'
+        if: github.event_name == 'workflow_dispatch' && inputs.runner == 'monolog-arc'
         run: corepack enable && corepack install
 
       - name: Install dependencies
@@ -66,7 +66,7 @@ jobs:
 
   build:
     name: Build Project
-    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted' && '["self-hosted","Linux","X64"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner == 'monolog-arc' && '["monolog-arc"]' || '["ubuntu-latest"]') }}
     needs: test
 
     steps:
@@ -77,10 +77,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '22.x'
-          cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.runner != 'self-hosted') && 'yarn' || '' }}
+          cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.runner != 'monolog-arc') && 'yarn' || '' }}
 
       - name: Enable declared Yarn
-        if: github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted'
+        if: github.event_name == 'workflow_dispatch' && inputs.runner == 'monolog-arc'
         run: corepack enable && corepack install
 
       - name: Install dependencies
