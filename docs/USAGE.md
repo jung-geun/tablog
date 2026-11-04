@@ -499,20 +499,49 @@ gh workflow run test.yml --ref main -f runner=monolog-arc
 
 웹·임베딩 이미지의 일반 main/tag 빌드는 GitHub hosted `ubuntu-latest`에서 선언된 `linux/amd64` 대상으로 수행합니다. 게시에 사용하는 공개 build args는 운영에서 검증한 사이트 주소·댓글·광고 설정·재검증 주기와 맞추고 비밀값은 넣지 않습니다. 이미지 게시 자체는 운영 컨테이너 교체가 아닙니다.
 
-아래 수동 staging 작업은 ARC ephemeral 러너에서 게시 이미지를 pull·검증한 뒤 전송용 artifact로 export하는 별도 경로이며, 운영 데몬에 직접 적재하지 않습니다. 운영 호스트를 이전했다면 기존 writer와 볼륨을 보존하고 실제 대상 데몬·Compose 프로젝트를 확인한 뒤, 검증한 이미지의 digest 또는 레이어·설정 동일성을 확인해 이전합니다.
+아래 수동 staging 작업은 ARC ephemeral 러너에서 게시 이미지를 pull·검증한 뒤 암호화한 전송용 artifact로 export하는 별도 경로이며, 운영 데몬에 직접 적재하지 않습니다. 운영 호스트를 이전했다면 기존 writer와 볼륨을 보존하고 실제 대상 데몬·Compose 프로젝트를 확인한 뒤, 검증한 이미지의 digest 또는 레이어·설정 동일성을 확인해 이전합니다.
 
-운영 호스트가 비공개 GHCR 이미지를 직접 pull할 인증이 없으므로, `GHCR_TOKEN`을 가진 staging 잡에서 게시 이미지만 export합니다. 토큰을 호스트나 로그에 내보내지 않으며 패키지를 공개로 바꾸지 않습니다. 아래 수동 경로는 재빌드 없이 두 이미지의 지정 태그를 pull·검증하고 `*.tar.gz`+`SHA256SUMS` artifact로 올립니다. artifact를 내려받아 체크섬을 확인한 뒤 운영 데몬에서 `docker load`하고, Compose에서는 `--no-build --pull never --no-deps`로 필요한 서비스만 시작합니다.
+운영 호스트가 비공개 GHCR 이미지를 직접 pull할 인증이 없으므로, `GHCR_TOKEN`을 가진 staging 잡에서 게시 웹 이미지만 export합니다. 토큰을 호스트나 로그에 내보내지 않으며 패키지를 공개로 바꾸지 않습니다. 아래 수동 경로는 재빌드 없이 지정 버전의 태그를 pull하고 태그 커밋·리비전 라벨·`linux/amd64` 런타임을 검증한 뒤, 운영자 전송 키(RSA-4096, SPKI 지문 `sha256:a68f015ac6cf540bc63c8622d07f1f91917e8ad7eb528c53bf309e739cfd4de6`)로 AES-256-GCM 암호화한 페이로드와 자격 없는 provenance(`registry-image.txt`, `image-inspect.json`, `web-runtime.json`, `envelope.json`)만 artifact로 올립니다. 평문 레이어는 어떤 artifact에도 올리지 않습니다.
 
 ```bash
-gh workflow run docker-build.yml --ref main -f image-tag=검증한-게시-태그
+gh workflow run docker-build.yml --ref main -f image-tag=1.21.19
 ```
 
-staging 잡이 올린 artifact는 이름이 `tablog-images-<태그>`이며 7일 보관됩니다. 운영 데몬이 있는 곳에서 내려받아 체크섬을 확인한 뒤 `docker load`합니다.
+staging 잡이 올린 artifact는 이름이 `tablog-v<버전>-encrypted-image`이며 1일 보관됩니다. 운영자 호스트에서 내려받아 attestation을 검증한 뒤 전송 비공개 키로 복호화하고 `docker load`합니다. 비공개 키는 운영자 호스트에만 두고 저장소·artifact·로그에 두지 않습니다.
 
 ```bash
-gh run download <staging-run-id> -n tablog-images-검증한-게시-태그 -D /tmp/tablog-stage
-(cd /tmp/tablog-stage && sha256sum -c SHA256SUMS)
-for f in /tmp/tablog-stage/*.tar.gz; do gunzip -c "$f" | docker load; done
+gh run download <staging-run-id> -n tablog-v1.21.19-encrypted-image -D /tmp/tablog-stage
+WEB_IMAGE=$(cat /tmp/tablog-stage/registry-image.txt)
+TAG_COMMIT=$(git rev-list -n 1 v1.21.19)
+gh attestation verify "oci://$WEB_IMAGE" --repo jung-geun/tablog --deny-self-hosted-runners --source-digest "$TAG_COMMIT" --source-ref refs/tags/v1.21.19 --signer-workflow jung-geun/tablog/.github/workflows/docker-build.yml
+node decrypt.mjs /tmp/tablog-stage/envelope.json /tmp/tablog-stage/web-image.tar.gz.enc /path/to/monolog-transfer-20261104-private.pem /tmp/tablog-stage/web-image.tar.gz
+gunzip -c /tmp/tablog-stage/web-image.tar.gz | docker load
+```
+
+복호화 스크립트(`decrypt.mjs`, Node 22)는 아래와 같으며, GCM 인증 실패나 SHA-256 불일치 시 0이 아닌 코드로 종료하고 부분 출력물을 삭제합니다.
+
+```js
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+import {pipeline} from 'node:stream/promises';
+const [envelopePath, payloadPath, privateKeyPath, outPath] = process.argv.slice(2);
+if (!envelopePath || !payloadPath || !privateKeyPath || !outPath) { console.error('usage: node decrypt.mjs <envelope.json> <payload.enc> <private.pem> <out.tar.gz>'); process.exit(2); }
+const envelope = JSON.parse(fs.readFileSync(envelopePath, 'utf8'));
+if (envelope.algorithm !== 'aes-256-gcm' || envelope.keyWrapping !== 'RSA-OAEP-SHA256') { console.error('unsupported envelope'); process.exit(1); }
+const key = crypto.privateDecrypt({key: fs.readFileSync(privateKeyPath, 'utf8'), padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256'}, Buffer.from(envelope.wrappedKey, 'base64'));
+const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'));
+decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+try {
+  await pipeline(fs.createReadStream(payloadPath), decipher, fs.createWriteStream(outPath, {mode: 0o600}));
+} catch (err) {
+  try { fs.unlinkSync(outPath); } catch {}
+  console.error('decrypt failed: ' + err.message);
+  process.exit(1);
+}
+const sha = crypto.createHash('sha256');
+for await (const chunk of fs.createReadStream(outPath)) sha.update(chunk);
+if (sha.digest('hex') !== envelope.plaintextArchiveSha256) { fs.unlinkSync(outPath); console.error('sha256 mismatch: output deleted'); process.exit(1); }
+console.log(JSON.stringify({verified: envelope.plaintextArchiveSha256, output: outPath}));
 ```
 
 
