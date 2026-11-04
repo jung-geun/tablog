@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       image-tag:
-        description: Published image tag to stage on the trusted deployment daemon
+        description: Published release version (X.Y.Z) to pull, verify, and export as an encrypted transfer artifact
         required: true
-        default: latest
+        default: 1.21.19
         type: string
 
 env:
@@ -120,12 +120,52 @@ jobs:
         run: echo "Pushed tags ${{ steps.tags.outputs.value }}"
 
   stage-for-deployment:
+    # ARC runners are ephemeral pods with their own DinD sidecar: a pull alone
+    # would vanish with the pod. Export the verified web image as an encrypted
+    # artifact the operator loads onto the production daemon (which holds no
+    # GHCR credentials). The payload is AES-256-GCM sealed to the operator-held
+    # RSA-4096 transfer key below (SPKI SHA-256 fingerprint
+    # a68f015ac6cf540bc63c8622d07f1f91917e8ad7eb528c53bf309e739cfd4de6).
+    # Only *.enc + envelope + credential-free provenance upload, never plaintext.
     if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: monolog-arc
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: read
+    env:
+      EXPORT_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAyoTpVLCrFKBUzZuJZO8+
+        gCvzGJF1cBgYCt2hPE6o/XchajAbQz5xuimnmzhMz9lekOo4i48jQImSuUDuMkUs
+        xqTfTHXwiPc0cbWi9s/fEdB/4K6hXpDMHouuwgLggwr97E00uJ8zRD4bS2ht6NZ5
+        4jTfqW48F/0Ha9bxEW18MjrRFyPfNJJz6oXesuE8RlY8opWaK5Al0mFShicFbr8Y
+        fJ5Rhb89MT3tEumnK3FXUEbgPvyey9yrn5i8S7/OQQZMbiZ5z9SyHo74VOKPqSV7
+        DVZYJzhtDFzaoXL4HmIeU7HUkBB0FGiX9FaEsiF+Y7udXmfphMkK44myb0zEWBPs
+        Ql2i+cbRPk56tO5VGS615lhM7cWVOA5oaaZNDeTmBIvqWeJDhPiwrdKs1LLvMiAp
+        kutoz3D15mCq75cc7vOgCXCN+3eoJYQVdkmyaAGfPl40XXqse7V9BFSh8OlJMYu7
+        Qir9/MoGJMfwhA/wPC/wfb0VDhCUIWyN7zYZObnqLAMH47folabFWi5yBka6JDDr
+        a/sCG6rTDKpTxO8pmPjr7iPMXR/k37r9ZSZpKFNnoVRWdpev9rCv5a6KRw7Ss0Dv
+        MdY3WcGMda4DX9YtfqG4VfSuxc44OH9+tMBPA8a+GfA8BkUS+Pz9exiFEgCHt1mp
+        F2SDuSfAI+sOpEXsQIg/hnMCAwEAAQ==
+        -----END PUBLIC KEY-----
     steps:
+      - name: Validate release input and resolve tag commit
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          printf '%s' "$IMAGE_TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "image-tag must be X.Y.Z, got '$IMAGE_TAG'"; exit 1; }
+          REF_LINES=$(git ls-remote "https://github.com/${{ github.repository }}.git" "refs/tags/v${IMAGE_TAG}")
+          [ -n "$REF_LINES" ] || { echo "tag v$IMAGE_TAG not found"; exit 1; }
+          EXPECTED_REVISION=$(printf '%s\n' "$REF_LINES" | awk '{ if (index($2, "^{}") > 0) c=$1; else l=$1 } END { print (c != "" ? c : l) }')
+          echo "EXPECTED_REVISION=$EXPECTED_REVISION" >> "$GITHUB_ENV"
+          echo "WEB_TAG=${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -133,13 +173,55 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Stage published images on the deployment daemon
+      - name: Pull canonical published amd64 image and lock digest
+        run: |
+          docker pull --platform linux/amd64 "$WEB_TAG"
+          mkdir -p export
+          docker image inspect "$WEB_TAG" --format '{{index .RepoDigests 0}}' | tee export/registry-image.txt
+          echo "WEB_IMAGE=$(cat export/registry-image.txt)" >> "$GITHUB_ENV"
+
+      - name: Verify revision label and execute published runtime
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
-          for SUFFIX in '' '-embedding'; do
-            IMAGE="${REGISTRY}/${IMAGE_NAME}${SUFFIX}"
-            docker pull "${IMAGE}:${IMAGE_TAG}"
-            docker image inspect "${IMAGE}:${IMAGE_TAG}" --format '{{.Id}} {{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
-            docker tag "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:latest"
-          done
+          LABEL_REVISION=$(docker image inspect "$WEB_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+          [ "$LABEL_REVISION" = "$EXPECTED_REVISION" ] || { echo "revision label $LABEL_REVISION != tag v$IMAGE_TAG commit $EXPECTED_REVISION"; exit 1; }
+          docker run --rm --platform linux/amd64 --entrypoint node "$WEB_IMAGE" -e 'const r={node:process.version,platform:process.platform,arch:process.arch,version:require("/app/package.json").version};if(r.platform!=="linux"||r.arch!=="x64"||r.version!=="'"$IMAGE_TAG"'")process.exit(1);console.log(JSON.stringify(r))' > export/web-runtime.json
+          docker image inspect "$WEB_IMAGE" > export/image-inspect.json
+
+      - name: Encrypt private image before uploading
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          export TRANSFER_SOURCE="$RUNNER_TEMP/tablog-v${IMAGE_TAG}.tar.gz"
+          export TRANSFER_DEST="export/web-image.tar.gz.enc"
+          export TRANSFER_ENVELOPE="export/envelope.json"
+          docker image save "$WEB_TAG" | gzip -1 > "$TRANSFER_SOURCE"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import {pipeline} from 'node:stream/promises';
+          const source = process.env.TRANSFER_SOURCE;
+          const dest = process.env.TRANSFER_DEST;
+          const envelopePath = process.env.TRANSFER_ENVELOPE;
+          const sha = crypto.createHash('sha256');
+          for await (const chunk of fs.createReadStream(source)) sha.update(chunk);
+          const plaintextArchiveSha256 = sha.digest('hex');
+          const key = crypto.randomBytes(32), iv = crypto.randomBytes(12);
+          const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+          await pipeline(fs.createReadStream(source), cipher, fs.createWriteStream(dest, {mode: 0o600}));
+          const wrapped = crypto.publicEncrypt({key: process.env.EXPORT_PUBLIC_KEY, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256'}, key);
+          fs.writeFileSync(envelopePath, JSON.stringify({algorithm: 'aes-256-gcm', keyWrapping: 'RSA-OAEP-SHA256', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), wrappedKey: wrapped.toString('base64'), plaintextArchiveSha256}, null, 2));
+          console.log(JSON.stringify({plaintextArchiveSha256, envelope: envelopePath}));
+          JS
+          rm -f "$TRANSFER_SOURCE"
+          ls -l export/
+
+      - name: Upload encrypted payload and credential-free provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: tablog-v${{ inputs.image-tag }}-encrypted-image
+          path: export/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error

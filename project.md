@@ -178,8 +178,8 @@ AdSense의 confirmation env는 운영자가 계정 설정을 확인했다는 표
 
 | Workflow | 실제 책임 |
 | --- | --- |
-| `.github/workflows/test.yml` | `main`/`dev` push·PR 및 수동 실행. Node 22, frozen Yarn install, lint/type-check/unit, 후속 build. 현재 lint/type-check step은 `continue-on-error: true`이므로 workflow 성공만으로 둘의 무오류를 주장하지 않음 |
-| `.github/workflows/docker-build.yml` | main·버전 태그에서 웹/embedding `linux/amd64` 이미지 빌드·GHCR 게시. 수동 실행은 게시된 이미지를 trusted daemon에 pull/tag하는 staging이며 앱 교체를 수행하지 않음 |
+| `.github/workflows/test.yml` | `main`/`dev` push·PR 및 수동 실행. Node 22, frozen Yarn install, lint/type-check/unit, 후속 build. 수동 실행 runner 선택은 hosted 기본·ARC `monolog-arc`. 현재 lint/type-check step은 `continue-on-error: true`이므로 workflow 성공만으로 둘의 무오류를 주장하지 않음 |
+| `.github/workflows/docker-build.yml` | main·버전 태그에서 웹/embedding `linux/amd64` 이미지 빌드·GHCR 게시. 수동 실행은 ARC `monolog-arc`에서 게시 웹 이미지를 pull·검증해 운영자 전송 키로 암호화한 artifact(`*.enc`+`envelope.json`+provenance, 평문 없음)로 export하는 staging이며 운영 데몬 적재·앱 교체를 수행하지 않음 |
 | `.github/workflows/revalidate.yml` | 15분 주기/수동 `/api/cron/content` 완료 대기. `REVALIDATE_URL`·`REVALIDATE_SECRET` secrets 필요, 일일 전체 스캔 판단은 콘텐츠 엔진 책임 |
 
 Next.js 코드를 수정하기 전에는 `AGENTS.md`와 설치된 `node_modules/next/dist/docs/`의 해당 가이드를 확인하세요. 이 문서에 적힌 명령은 개발 참조이며 이번 문서 갱신에서 실행한 검증 결과가 아닙니다.
