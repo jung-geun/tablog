@@ -12,6 +12,7 @@ import { CONFIG } from "site.config"
 import { debugLog } from "src/libs/utils/logger"
 import { normalizeNotionPost } from "./postModel"
 import { absoluteUrl } from "src/libs/seo"
+import { isTrustedNotionFileUrl } from "src/libs/utils/security"
 
 const RECORD_MAP_TTL_MS = CONFIG.revalidateTime * 1000
 
@@ -452,6 +453,40 @@ function attachmentSource(
   return absoluteUrl(`/api/attachment?${params}`)
 }
 
+// The official API exposes no embed height, and RNX's embed iframe is
+// absolutely positioned, so file embeds collapse to 0px without one.
+const NOTION_FILE_EMBED_HEIGHT = 480
+
+/**
+ * Render a Notion-hosted file upload (e.g. a self-contained `.html` diagram
+ * attached to an Embed block) as an embed instead of a bookmark card.
+ * The presigned S3 URL expires within hours while the recordMap cache lives
+ * on, so the iframe points at `/api/attachment`, which re-resolves a fresh
+ * signed URL per request. Falls back to the bare filename as caption so the
+ * file stays identifiable below the frame (and in Markdown export).
+ */
+function applyNotionFileEmbed(args: {
+  embedUrl: string
+  pageId: string
+  blockId: string
+  properties: Record<string, unknown>
+  format: Record<string, unknown>
+  caption: unknown[] | undefined
+  richText: (arr: unknown[]) => unknown
+}): void {
+  const src = attachmentSource({ type: "file", file: { url: args.embedUrl } }, args.pageId, args.blockId)
+  if (!src) return
+  args.properties.source = [[src]]
+  args.format.display_source = src
+  args.format.block_height = NOTION_FILE_EMBED_HEIGHT
+  if (args.caption && args.caption.length > 0) {
+    args.properties.caption = args.richText(args.caption)
+  } else {
+    const filename = decodeURIComponent(new URL(args.embedUrl).pathname.split("/").pop() || "")
+    if (filename) args.properties.caption = [[filename]]
+  }
+}
+
 /**
  * Process a single block and add it to recordMap
  */
@@ -586,6 +621,9 @@ async function processBlock(block: any, parentId: string, pageId: string, notion
             properties.caption = rt(blockData.caption)
           }
           forcedMappedType = 'embed'
+        } else if (isTrustedNotionFileUrl(lpUrl)) {
+          applyNotionFileEmbed({ embedUrl: lpUrl, pageId, blockId: block.id, properties, format, caption: blockData.caption, richText: rt })
+          forcedMappedType = 'embed'
         } else {
           properties.link = [[lpUrl]]
           properties.title = blockData.caption && blockData.caption.length > 0
@@ -600,6 +638,8 @@ async function processBlock(block: any, parentId: string, pageId: string, notion
         // Phase 2D: emit display_source for allowlisted hosts; otherwise
         // degrade to a bookmark card. Arbitrary iframe origins are an XSS
         // surface, so the trust boundary is explicit (EMBED_ALLOWED_HOSTS).
+        // Notion-hosted file uploads (e.g. `.html` diagrams) are the author's
+        // own files, not third-party origins, so they keep the iframe.
         const embedUrl = blockData.url
         if (!embedUrl) break
         if (isAllowedEmbedHost(embedUrl)) {
@@ -611,6 +651,8 @@ async function processBlock(block: any, parentId: string, pageId: string, notion
           if (blockData.caption && blockData.caption.length > 0) {
             properties.caption = rt(blockData.caption)
           }
+        } else if (isTrustedNotionFileUrl(embedUrl)) {
+          applyNotionFileEmbed({ embedUrl, pageId, blockId: block.id, properties, format, caption: blockData.caption, richText: rt })
         } else {
           properties.link = [[embedUrl]]
           properties.title =

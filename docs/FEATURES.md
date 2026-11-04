@@ -188,10 +188,10 @@ DB 블록은 `src/routes/Detail/components/NotionRenderer/index.tsx`의 **`compo
 ## 공식 Notion 블록 지원 범위
 - `heading_4`, 토글 제목의 `is_toggleable`, `column.width_ratio`를 현재 렌더러가 이해하는 형태로 변환. 생략된 열 너비는 실제 열 개수에 맞춰 균등 배분.
 - 독립된 페이지 링크·alias 및 한 공개 글의 링크만 담긴 문단은 제목·요약·선택적 썸네일의 미리보기 카드로 자동 표시. Notion 페이지 ID를 공개 slug로 연결하고 원본 블록 앵커·SSR·에디터 SPA 이동을 유지. 문장 안의 mention·링크와 알 수 없는·비공개 대상은 기존 표시를 유지하며 모바일에서는 썸네일을 아래에 배치.
-- 변환 캐시는 `recordMap:v9`. 이미 발행된 내구성 본문은 캐시 버전 변경만으로 재작성하지 않으므로 기존 글에 적용하려면 해당 글의 정상 변경 동기화 또는 인증된 `/api/revalidate?path=/slug` 본문 재확인이 필요. `full=true`는 전체 메타데이터 대조이며 모든 본문 강제 재작성 옵션이 아님.
+- 변환 캐시는 `recordMap:v10`. 이미 발행된 내구성 본문은 캐시 버전 변경만으로 재작성하지 않으므로 기존 글에 적용하려면 해당 글의 정상 변경 동기화 또는 인증된 `/api/revalidate?path=/slug` 본문 재확인이 필요. `full=true`는 전체 메타데이터 대조이며 모든 본문 강제 재작성 옵션이 아님.
 - 의존성 선언은 `package.json`, 정확한 해석 버전은 `yarn.lock` 기준. 현재 선언은 Notion SDK `^5.21.0`, `react-notion-x` / `notion-types` / `notion-utils` `^7.10.0`이며, 공식 API 블록을 현재 렌더러 구조로 변환하는 코드를 함께 사용합니다. SDK를 올리는 것만으로 모든 새 블록이 지원되지는 않습니다.
 - 탭은 RNX 7.10.1 이상이 지원하지만 현재 설치판에는 렌더 분기가 없음. 회의록·레거시 template·동기화 원본 참조는 별도 변환 정책이 필요. 공식 API의 `unsupported.block_type`은 종류만 알려주며 블록 내용은 제공하지 않으므로 SDK 갱신만으로 복원할 수 없음.
-- [업로드 HTML 블록](https://developers.notion.com/reference/block#html-blocks)은 별도 `html` 타입이 아닌 업로드 기반 `embed`. 읽기 응답은 만료되는 서명 `embed.url`이며 현재는 인라인 실행 대신 링크로 표시. 안전한 인터랙티브 지원에는 공개 페이지·블록 검증을 통한 URL 갱신과 전용 샌드박스 iframe이 필요하며 앱 출처의 HTML 삽입이나 일반 iframe 호스트 허용만으로 대체하지 않음.
+- [업로드 HTML 블록](https://developers.notion.com/reference/block#html-blocks)은 별도 `html` 타입이 아닌 업로드 기반 `embed`. 읽기 응답은 만료되는 서명 `embed.url`이며 Notion 호스트 업로드는 `/api/attachment` 경유의 샌드박스 iframe으로 인라인 렌더. 요청마다 공개 페이지·블록을 검증하고 통과한 작은 본문은 최대 5분간 프로세스 내 캐시와 `public, max-age=300`으로 서빙하며, 바이트 프록시·`text/html` 재표기·`sandbox allow-scripts`·`nosniff` 격리로 만료·다운로드 응답·외부 출처 삽입 없이 표시. 비ASCII 파일명은 RFC 5987로 인코딩. 허용 목록 밖의 일반 외부 URL은 기존처럼 북마크 카드로 표시하며 앱 출처의 HTML 삽입이나 일반 iframe 호스트 허용으로 대체하지 않음.
 
 ---
 
