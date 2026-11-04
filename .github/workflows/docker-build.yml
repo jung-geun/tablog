@@ -157,7 +157,7 @@ jobs:
           printf '%s' "$IMAGE_TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "image-tag must be X.Y.Z, got '$IMAGE_TAG'"; exit 1; }
           REF_LINES=$(git ls-remote "https://github.com/${{ github.repository }}.git" "refs/tags/v${IMAGE_TAG}")
           [ -n "$REF_LINES" ] || { echo "tag v$IMAGE_TAG not found"; exit 1; }
-          EXPECTED_REVISION=$(printf '%s\n' "$REF_LINES" | awk '/\^{}$/ {c=$1} !/\^{}$/ {l=$1} END {print (c != "" ? c : l)}')
+          EXPECTED_REVISION=$(printf '%s\n' "$REF_LINES" | awk '{ if (index($2, "^{}") > 0) c=$1; else l=$1 } END { print (c != "" ? c : l) }')
           echo "EXPECTED_REVISION=$EXPECTED_REVISION" >> "$GITHUB_ENV"
           echo "WEB_TAG=${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
