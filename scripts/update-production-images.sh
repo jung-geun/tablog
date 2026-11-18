@@ -54,8 +54,12 @@ OLD_EMBEDDING_ID=""
 PULL_STARTED=false
 ROLLOUT_COMPLETE=false
 
+DOCKER_CONFIG_SOURCE="${DOCKER_CONFIG:-$HOME/.docker}"
 DOCKER_CONFIG="$(mktemp -d "${TMPDIR:-/tmp}/tablog-docker-auth.XXXXXX")"
 chmod 700 "$DOCKER_CONFIG"
+if [[ -d "$DOCKER_CONFIG_SOURCE/cli-plugins" ]]; then
+  ln -s "$DOCKER_CONFIG_SOURCE/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
+fi
 export DOCKER_CONFIG
 # shellcheck disable=SC2329
 cleanup() {

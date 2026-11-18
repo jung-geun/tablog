@@ -9,6 +9,8 @@ Tablog의 버전별 변경 이력. 프로젝트 개요는 [`../README.md`](../RE
 - Docker Compose 프로덕션 서버가 `CONTENT_RECONCILE_INTERVAL_MINUTES`(기본 10080분/7일, `0`이면 비활성화) 주기로 콘텐츠 대조·임베딩·그래프·알림 유지보수를 내부에서 실행. 외부 호스트/GitHub 스케줄과 `/api/cron/content` 제거. 백그라운드 대조는 Pages Router ISR 경로를 즉시 무효화하지 않고 설정된 만료 후 방문 시 갱신.
 - GitHub Actions가 공개 `main` 이미지를 게시. 운영 호스트의 주간 poller는 동일 소스 리비전의 성공한 공개 CI 실행을 확인한 뒤 자동 배포하고, `/health` 실패 시 이전 실행 이미지로 복구. GHCR pull token은 필요하지 않으며, 호스트는 cryptographic attestation을 검증하지 않음.
 
+- 자격증명을 비운 임시 Docker 설정을 사용해도 macOS Docker Desktop의 Compose CLI plugin 경로만 재사용해 주간 운영 이미지 poller가 Compose 명령을 실행하도록 수정.
+
 ---
 
 ## v1.21.19 — 2026-11-04
