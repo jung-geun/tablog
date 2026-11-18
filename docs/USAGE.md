@@ -273,7 +273,7 @@ NEXT_PUBLIC_GOOGLE_ADSENSE_DISABLE=false
 | `CACHE_NAMESPACE` | `monolog` | Redis 키 prefix. 동일 Redis를 staging·preview 등 여러 배포가 공유할 때 충돌 방지 |
 | `GRAPH_BUILD_TIMEOUT_MS` | `120000` | Notion graph complete-build 시간 제한(ms). 제한을 넘긴 partial graph는 Qdrant snapshot으로 저장하지 않음. 최대 `300000` |
 | `REVALIDATE_HOURS` | `6` | 소스 빌드 시 적용하는 ISR 재생성 주기(양의 정수 시간); 백그라운드 콘텐츠 대조 주기와 별개 |
-| `CONTENT_RECONCILE_INTERVAL_MINUTES` | Docker Compose `15`; 그 외 미설정 | 프로덕션 Node.js 서버에서 자동 대조하는 간격(분). `0`이면 비활성화. `0`–`10080` 정수만 허용하며 컨테이너 재생성 후 적용 |
+| `CONTENT_RECONCILE_INTERVAL_MINUTES` | Docker Compose `10080`; 그 외 미설정 | 프로덕션 Node.js 서버에서 Notion 콘텐츠를 대조하는 간격(분). 기본 7일. `0`이면 비활성화하며 `0`–`10080` 정수만 허용합니다 |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | 사이트 canonical·sitemap·RSS·IndexNow와 요청 origin 검증에 사용. 공개 배포에는 본인의 실제 주소를 **빌드 전에** 설정 |
 | `TRUSTED_PROXY_HOPS` | `0` | 기본값은 전달된 IP 헤더를 무시. 프록시 인증키 검증을 통과한 요청에서만 지정한 홉 수를 신뢰 |
 | `TRUSTED_PROXY_SECRET` | — | 프록시 신뢰를 켤 때만 필요. 프록시가 `X-Monolog-Proxy-Secret`을 강한 공유키로 덮어써야 하며 기본 배포에는 필요 없음 |
@@ -296,15 +296,16 @@ NEXT_PUBLIC_GOOGLE_ADSENSE_DISABLE=false
 
 ### 콘텐츠 자동 동기화 (Docker Compose)
 
-프로덕션 Node.js 서버가 `CONTENT_RECONCILE_INTERVAL_MINUTES` 간격으로 Notion을 대조하고 임베딩·그래프 유지보수·알림을 처리합니다. Compose 기본값은 15분이며 `.env`에서 바꿀 수 있습니다. `0`은 비활성화입니다. 컨테이너가 실행 중일 때만 스케줄러가 동작합니다.
+프로덕션 Node.js 서버는 `CONTENT_RECONCILE_INTERVAL_MINUTES` 간격으로 Notion 콘텐츠를 대조하고 임베딩·그래프 유지보수·알림을 처리합니다. Docker Compose 기본값은 7일(`10080`분)이며 `.env`에서 조정할 수 있습니다. `0`은 비활성화입니다. 컨테이너가 실행 중일 때만 동작합니다.
 
 ```env
-CONTENT_RECONCILE_INTERVAL_MINUTES=15
+CONTENT_RECONCILE_INTERVAL_MINUTES=10080
 ```
 
-이 스케줄러는 앱 프로세스 안에서 실행되므로 GitHub Actions나 호스트 cron이 앱으로 주기 요청을 보낼 필요가 없습니다. 기존 서버의 `reconcile-content-host.sh` cron 줄은 제거하세요. 이 경로만을 위해 Cloudflare 예외를 추가했다면 함께 제거해도 됩니다. `REVALIDATE_URL` GitHub secret도 다른 workflow에서 쓰지 않을 때만 삭제하세요. 서버리스 또는 scale-to-zero 배포에서는 지속 실행이 보장되지 않으므로 이 설정을 사용하지 마세요. 이 동작은 Docker Compose의 상시 실행 컨테이너를 대상으로 합니다.
+이 스케줄러는 앱 프로세스 안에서 실행되며 외부 요청이나 GitHub token이 필요하지 않습니다. 기존 `reconcile-content-host.sh` cron을 등록했다면 제거하세요. 서버리스나 scale-to-zero 배포에서는 지속 실행이 보장되지 않습니다.
 
-배경 대조는 Pages Router의 ISR 경로를 즉시 무효화하지 않습니다. 콘텐츠 저장소와 유지보수 작업은 대조 주기에 맞춰 갱신되지만, 정적 페이지는 다음 방문 시 `REVALIDATE_HOURS` 만료 후 재생성됩니다. 즉시 경로 재생성이 필요한 발행에는 Notion webhook 또는 수동 `/api/revalidate`를 사용하세요.
+배경 대조는 Pages Router ISR 경로를 즉시 무효화하지 않습니다. 정적 페이지는 다음 방문 시 `REVALIDATE_HOURS` 만료 후 재생성됩니다. 즉시 재생성이 필요한 발행은 Notion webhook 또는 수동 `/api/revalidate`를 사용하세요.
+
 
 스케줄러 상태와 실패는 다음 로그에서 확인합니다.
 
@@ -384,40 +385,33 @@ docker compose logs -f blog embedding
 curl --fail --max-time 5 'https://<사이트-도메인>/health'
 ```
 
-### GHCR `main` 이미지 자동 배포 (선택)
+### GHCR `main` 이미지 주간 자동 배포
 
-GitHub Actions는 `main` push가 성공적으로 빌드되면 웹·임베딩 이미지를 각각 `:main` 태그로 게시합니다. 운영 Linux 호스트의 poller는 5분마다 두 태그를 확인하고, 두 이미지의 `org.opencontainers.image.revision`이 같은 경우에만 배포합니다. 버전 태그는 `:main`을 바꾸지 않으므로 자동 운영 업데이트는 `main` push만 반영합니다.
+GitHub Actions는 `main` push가 성공적으로 빌드되면 웹·임베딩 이미지를 공개 `:main` 태그로 게시합니다. 운영 호스트의 주간 cron은 새 image revision을 확인하고, 공개 GitHub Actions API에서 같은 revision의 main-branch build 성공을 확인한 뒤 배포합니다. 이미지 pull에는 GitHub token이 필요하지 않습니다. CI는 provenance를 생성하지만, tokenless host poller는 이를 cryptographically 검증하지 않습니다.
 
-먼저 새 `docker-compose.yml`과 `scripts/update-production-images.sh`를 기존 운영 checkout에 한 번 배포합니다. 운영 `.env`에 다음 설정을 추가하세요.
+운영 `.env`에 다음 값을 설정합니다.
 
 ```dotenv
+COMPOSE_FILE=/Users/katherine/tablog/migration/desktop-snapshot-20261104/desktop-compose.json:/Users/katherine/tablog/auto-update.override.json
 IMAGE_AUTO_UPDATE_ENABLED=true
 BLOG_IMAGE=ghcr.io/jung-geun/tablog:main
 EMBEDDING_IMAGE=ghcr.io/jung-geun/tablog-embedding:main
-GHCR_PULL_CREDENTIALS_FILE=/home/<deploy-user>/.config/tablog/ghcr-pull.env
-IMAGE_UPDATE_WAIT_SECONDS=2400
+CONTENT_RECONCILE_INTERVAL_MINUTES=10080
+IMAGE_UPDATE_WAIT_SECONDS=3600
 ```
 
-GitHub에서 해당 패키지의 읽기 전용 권한과 provenance attestation 읽기 권한을 가진 토큰을 만들고 별도 파일에 저장합니다. 운영 호스트에는 GitHub CLI(`gh`)도 설치해야 합니다. Poller는 토큰으로 Docker registry 로그인과 `gh attestation verify`를 수행합니다. `GHCR_PULL_TOKEN`을 `.env`에 넣지 마세요. Compose는 `.env` 전체를 blog 컨테이너에 전달합니다.
+현재 `mac-mini-katherine`의 snapshot stack에는 blog·Redis·content Redis·Qdrant만 있습니다. 이 경로는 해당 서비스와 볼륨을 보존하고 blog image 및 주간 Notion reconciliation만 갱신합니다. EmbeddingGemma 서비스는 시작하지 않으므로 임베딩 검색 기능은 제공되지 않습니다. 4 GiB Docker memory에서 새 embedding service를 추가하면 OOM 위험이 있습니다.
 
-```bash
-mkdir -p "$HOME/.config/tablog"
-cat > "$HOME/.config/tablog/ghcr-pull.env" <<'EOF'
-GHCR_PULL_USERNAME=<GitHub username>
-GHCR_PULL_TOKEN=<read-only package and attestation token>
-EOF
-chmod 600 "$HOME/.config/tablog/ghcr-pull.env"
-```
-
-배포 계정의 crontab에 5분 주기를 등록합니다.
+기존 운영 checkout에 `scripts/update-production-images.sh`를 설치합니다. `auto-update.override.json`은 active snapshot의 blog image를 `BLOG_IMAGE`로, `CONTENT_RECONCILE_INTERVAL_MINUTES`를 blog runtime environment로 덮어씁니다. crontab에는 다음 주기를 등록합니다.
 
 ```cron
-*/5 * * * * /bin/bash "/absolute/path/tablog/scripts/update-production-images.sh" 2>&1 | /usr/bin/logger -t tablog-image-update
+0 3 * * 0 /bin/bash "/Users/katherine/tablog/scripts/update-production-images.sh" 2>&1 | /usr/bin/logger -t tablog-image-update
 ```
 
-Poller는 임시 Docker 인증 디렉터리를 사용하고 종료 시 지웁니다. 각 이미지의 `linux/amd64` 플랫폼과 동일 source revision을 확인하고, GitHub-hosted runner에서 `docker-build.yml`이 만든 main-branch attestation을 검증한 뒤에만 Compose를 갱신합니다. `/health` 실패 시 이전 실행 이미지 ID로 롤백합니다. 실패한 같은 이미지 쌍은 새 게시 전까지 반복 배포하지 않습니다. 로그는 `journalctl -t tablog-image-update --since today --no-pager`로 확인하세요. `IMAGE_AUTO_UPDATE_ENABLED=false`로 끄고 crontab 항목을 제거할 수 있습니다.
+Poller는 Linux amd64 image와 동일 revision을 확인하고, public Actions API의 성공한 `Docker Build and Push` 실행을 조회합니다. 이 검증은 provenance attestation 자체를 검증하지 않습니다. `/health` 실패 시 이전 실행 blog image ID로 rollback하고 실패한 동일 image는 새 게시 전까지 재시도하지 않습니다. 상태는 `log show --last 7d --style compact --predicate 'eventMessage CONTAINS "tablog-image-update"'`와 `docker compose logs blog`에서 확인합니다. `IMAGE_AUTO_UPDATE_ENABLED=false`와 crontab 항목 제거로 중지할 수 있습니다.
 
-이 자동 경로는 이미지만 갱신합니다. Compose 파일이나 운영 설정 변경은 checkout에 별도로 반영해야 합니다. 처음 활성화할 때는 기존 프로젝트 이름·볼륨·이미지·설정 백업을 확인하세요. 자동 배포도 프로세스 liveness만으로 실제 Notion·Redis·Qdrant 기능까지 보장하지 않습니다.
+blog 내부 스케줄러도 7일마다 Notion 콘텐츠를 대조합니다. 컨테이너 재생성 시 `/api/init`이 즉시 초기 동기화를 수행합니다. Pages Router ISR 페이지는 `REVALIDATE_HOURS` 만료 후 방문 시 갱신됩니다. 현재 host의 GHCR package가 공개이므로 pull에 registry key가 필요하지 않습니다.
+
 
 ### 기존 운영 GHCR 이미지 사용 (선택)
 

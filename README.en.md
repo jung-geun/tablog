@@ -162,10 +162,10 @@ Configure DNS and an HTTPS reverse proxy separately. `TRUSTED_PROXY_HOPS=0` igno
 
 ### 5. Reconcile Notion changes
 
-Docker Compose runs content reconciliation, embeddings, and graph maintenance inside the blog server. The default interval is 15 minutes; set `CONTENT_RECONCILE_INTERVAL_MINUTES` in `.env` to change it. Recreate the container to apply changes. Set it to `0` to disable scheduling.
+Docker Compose reconciles Notion content, embeddings, and graph maintenance in the blog server. The default interval is weekly (`10080` minutes); set `CONTENT_RECONCILE_INTERVAL_MINUTES` in `.env` to change it. Recreate the container to apply changes. Set it to `0` to disable scheduling.
 
 ```env
-CONTENT_RECONCILE_INTERVAL_MINUTES=15
+CONTENT_RECONCILE_INTERVAL_MINUTES=10080
 ```
 
 The scheduler writes directly to the content store and does not send requests through Cloudflare. Pages Router ISR pages are not invalidated immediately; they regenerate on a later visit after `REVALIDATE_HOURS` expires. `/api/init` prepares public routes at startup. Check `[content-reconcile]` entries with `docker compose logs blog`.
@@ -199,7 +199,7 @@ Production images target `linux/amd64`. Before replacing existing services, pres
 
    **Q3: Why don't Notion posts update automatically?**
 
-   A3: Set `CONTENT_RECONCILE_INTERVAL_MINUTES` for the in-process production scheduler (Docker Compose defaults to 15 minutes), and configure the Notion webhook for immediate events. Check `docker compose logs blog` for reconciliation results. ISR pages regenerate lazily after `REVALIDATE_HOURS` expires.
+   A3: Docker Compose defaults `CONTENT_RECONCILE_INTERVAL_MINUTES` to 10080 minutes (weekly). Set a different interval in `.env`; use the Notion webhook for immediate events. Check `docker compose logs blog`. ISR pages regenerate lazily after `REVALIDATE_HOURS` expires.
 
    **Q4: What should I enter for NEXT_PUBLIC_GOOGLE_MEASUREMENT_ID and NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION?**
 

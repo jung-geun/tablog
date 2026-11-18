@@ -171,10 +171,10 @@ docker compose logs -f blog embedding
 
 ### 5. Notion 변경 자동 반영
 
-Docker Compose는 blog 서버 안에서 콘텐츠 대조·임베딩·그래프 유지보수를 주기 실행합니다. 기본 주기는 15분이며 `.env`의 `CONTENT_RECONCILE_INTERVAL_MINUTES`로 조정합니다. 서버를 재생성하면 적용됩니다. `0`은 비활성화입니다.
+Docker Compose는 blog 서버에서 Notion 콘텐츠를 주기 대조하고 임베딩·그래프 유지보수를 처리합니다. 기본 주기는 7일(`10080`분)이며 `.env`의 `CONTENT_RECONCILE_INTERVAL_MINUTES`로 조정합니다. 서버를 재생성하면 적용됩니다. `0`은 비활성화입니다.
 
 ```env
-CONTENT_RECONCILE_INTERVAL_MINUTES=15
+CONTENT_RECONCILE_INTERVAL_MINUTES=10080
 ```
 
 스케줄러는 Cloudflare를 통하지 않고 콘텐츠 저장소에 직접 반영합니다. Next.js Pages Router의 ISR 페이지는 변경 경로를 즉시 무효화하지 않으며, 방문 시 `REVALIDATE_HOURS` 만료 후 재생성됩니다. `/api/init`은 첫 기동 시 공개 경로를 준비합니다. 상태는 `docker compose logs blog`의 `[content-reconcile]` 로그에서 확인하세요.
