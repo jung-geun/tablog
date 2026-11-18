@@ -237,6 +237,18 @@ describe("content registry public lifecycle", () => {
     expect(graphDelta).not.toHaveBeenCalled()
   })
 
+  it("processes scheduled maintenance without requiring ISR revalidation", async () => {
+    await bootstrap()
+    publish({ ...a, title: "Updated title", lastEditedTime: NEXT_EDIT }, "Alpha original body")
+
+    const result = await reconcileContent({ deferPathRevalidation: true })
+
+    expect(result).toMatchObject({ changed: 1, failed: [], pending: [], maintenancePending: 0 })
+    expect(revalidate).not.toHaveBeenCalled()
+    expect(graphDelta).toHaveBeenCalledTimes(1)
+    expect(loadFixture()?.effects).toEqual([])
+  })
+
   it("changes metadata without changing the body version or another post", async () => {
     await bootstrap()
     const previous = await getContentPostBySlug("alpha")

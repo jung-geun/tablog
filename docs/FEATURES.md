@@ -127,9 +127,9 @@ About 라우트는 다음 위젯들을 한 화면에 묶어 보여줍니다.
 - 현재 공개 글의 본문 해시(레지스트리 초기화 전에는 수정 시각)와 그래프에 영향을 주는 메타데이터로 재빌드 필요 여부를 판단
 - 해시가 일치하는 Qdrant `post_graph_snapshots` 스냅샷이 있으면 그 `BuiltGraph`를 재사용하고, 바뀐 글의 엣지만 다시 추출해 raw/built graph를 갱신
 - `/graphs/notion-graph.json`는 관계 스냅샷에 현재 문서 버전의 PCA 좌표·코사인 유사도만 응답 시 결합하며 `no-store`로 제공합니다. 원본 `BuiltGraph`와 RightRail의 2D 좌표는 변경하지 않음
-- `/api/cron/content`가 콘텐츠 outbox의 경로 무효화를 먼저 완료한 뒤 그래프·임베딩 유지보수를 수행. 초기화·수동 revalidate·webhook은 AI 유지보수를 기다리지 않으며, `yarn warm:graph`로 수동 워밍 가능
+- 프로덕션 Node.js 서버의 내부 스케줄러가 설정한 주기로 내구성 레지스트리와 유지보수 작업을 대조합니다. Pages Router ISR 경로는 즉시 무효화하지 않고 기존 만료 주기에 따라 방문 시 갱신합니다.
 - `google/embeddinggemma-2@914f7f89142e33e77833254d9c9b90c3cef7303b`의 정규화된 768차원 벡터를 별도 Qdrant 컬렉션 `post_embeddings_embeddinggemma_2_768_v1`에 영속 저장. 초기 공개·제목·본문 해시가 바뀔 때만 재계산하며 slug·태그·시각만 바뀌면 메타데이터만 갱신
-- 임베딩은 `/api/cron/content`의 유지보수 단계에서 수행. 초기화·webhook·수동 발행은 기다리지 않고 다음 유지보수에서 누락·변경분을 보충. 실패한 버전은 검색·좌표에서 제외하고 기존 벡터 체크포인트를 보존해 다음 유지보수에서 재시도. 비공개·삭제 글은 즉시 검색 후보에서 제외하고 유지보수 시 저장 벡터도 제거
+- 임베딩은 예약 유지보수에서 실행합니다. 초기화·webhook·수동 발행은 기다리지 않으며 다음 예약 실행이 누락·변경 벡터를 채웁니다. 실패 버전은 검색·좌표에서 제외하고 체크포인트를 유지해 재시도합니다. 비공개·삭제 글은 검색에서 즉시 제외하고 유지보수 시 저장 벡터도 제거합니다.
 - 문서 제목과 전체 본문을 공식 document prompt로 처리. 8192-token을 넘는 본문은 토큰을 버리지 않는 창으로 나눠 정규화·가중 결합. 검색은 공식 SearchQuery prompt를 사용하며 전체 768차원으로 검색; PCA에서 가까운 점은 유사도의 시각적 근사이며 명시적 관계를 뜻하지 않음
 - 벡터 보강 실패는 이미 확보한 명시적 관계·태그·시리즈 논리 그래프를 중단시키지 않음. Qdrant 전체 장애 시에는 사용 가능한 캐시·본문 관계로 fallback. 임베딩이 없으면 `Relationship layout · post embeddings pending`, 일부 있으면 준비된 글 수/전체 수를 표시. stale 응답은 클라이언트에서 3초 간격으로 재조회하지만 인덱싱 완료 자체를 보장하지 않으며, Meaning 검색은 서버가 사용 가능 상태를 응답할 때만 활성화
 
@@ -201,8 +201,7 @@ DB 블록은 `src/routes/Detail/components/NotionRenderer/index.tsx`의 **`compo
 - 증분 대조: `last_edited_time` overlap 스캔 + 24시간마다 전체 대조(삭제·데이터소스 이동 감지). 같은 분 안의 연속 편집은 분이 지난 뒤 1회 재확인
 - 바뀐 글만 본문을 다시 가져오고 영향 경로만 ISR 재생성. 본문 버전(`contentHash`)이 같으면 유지; 임베딩은 제목·본문 변경만 재계산하며 그 외 메타데이터 변경은 기존 벡터 유지
 - slug 변경 → 이전 주소 308 리다이렉트, 비공개·삭제 → 이전 alias까지 제거, slug 충돌 → 양쪽 모두 비노출, 예약 발행 → 발행 시각 이후 첫 대조에서 공개
-- 입력: Notion webhook(`/api/notion-webhook`, HMAC 서명 · 이벤트 ID 중복 제거), 호스트 cron의 15분 주기 `/api/cron/content`, 수동 `/api/revalidate`. GitHub Actions schedule은 지연·누락 가능한 보조 트리거
-- 실패한 경로·그래프 유지보수·IndexNow·Discord 알림은 영속 outbox에서 재시도. webhook·수동·초기화 요청은 발행만 기다리고 AI 그래프 작업은 cron에서 처리
+- 입력: Notion webhook(`/api/notion-webhook`, HMAC 서명·이벤트 ID 중복 제거), 프로덕션 Node.js 서버 내부 스케줄러, 수동 `/api/revalidate`. 스케줄 간격은 `CONTENT_RECONCILE_INTERVAL_MINUTES`로 제어하며 Docker Compose 기본값은 15분입니다.
 
 ---
 
@@ -255,13 +254,13 @@ DB 블록은 `src/routes/Detail/components/NotionRenderer/index.tsx`의 **`compo
 - **`/robots.txt` · `/llms.txt` · `/{slug}.md`** — 공개 글 목록과 같은 레지스트리에서 동적 생성
 - **IndexNow** — 발행·수정·slug 변경·삭제된 URL을 발행 직후 제출 (`INDEXNOW_KEY`, `/<key>.txt`)
 - **검색 서비스 검증** — Google·Naver·Bing 메타 태그를 컨테이너 시작 시 주입
-- 정기 동기화 — 운영 Linux 호스트의 `scripts/reconcile-content-host.sh`를 15분 cron으로 실행. GitHub Action (`revalidate.yml`)은 같은 `/api/cron/content` 호출을 예약하는 보조 수단이며 자동 실행 시각을 보장하지 않음. 남은 작업이 있으면 실패로 표시
+- 정기 동기화 — 프로덕션 Node.js 서버 내부에서 실행하며 Docker Compose 기본 `CONTENT_RECONCILE_INTERVAL_MINUTES`는 15분입니다. `0`으로 비활성화할 수 있고 GitHub Actions나 호스트 cron 요청은 필요하지 않습니다.
 - **홈 초기 로딩·접근성** — Feed의 `main` 랜드마크와 SSR 링크를 유지. Prism 추가 문법은 코드가 나타날 때만 로딩하고, 글·About·Graph 링크는 자동 viewport prefetch 대신 Pages Router의 hover·클릭 로딩을 사용. 태그는 빈도별 글자 크기와 hover 색상을 유지하되 불투명도·색상 tween 없이 24px 이상의 타깃·포커스 표시를 제공하고 라이트 테마 보조 텍스트 대비를 확보.
 
 ---
 
 ## 컨테이너 ISR warmup
-Docker 컨테이너 entrypoint가 standalone 서버를 시작한 뒤 자동으로 `/api/init`을 호출합니다 (3회 retry). 레지스트리가 비어 있으면 최초 동기화로 구축하고 모든 공개 경로를 재생성하며, 이미 있으면 바뀐 글만 확인한 뒤 경로를 워밍합니다. 그래프·ontology의 대기 작업은 `/api/cron/content`가 처리합니다.
+Docker entrypoint는 standalone 서버를 시작한 뒤 `/api/init`을 자동 호출합니다(최대 3회 재시도). 저장소가 비어 있으면 최초 동기화로 구축하고 공개 경로를 준비하며, 이미 있으면 변경 경로를 워밍합니다. 이후 프로덕션 내부 스케줄러가 콘텐츠 대조·그래프 유지보수·임베딩을 처리합니다.
 
 수동 워밍:
 
@@ -273,7 +272,7 @@ curl -H "Authorization: Bearer $REVALIDATE_SECRET" "https://your-site.com/api/in
 ---
 
 ## 기타
-- 증분 동기화 (`/api/cron/content` 15분 주기, Notion webhook, `/api/revalidate`)
+- 증분 동기화 (프로덕션 내부 스케줄러, Notion webhook, `/api/revalidate`)
 - Mermaid 다이어그램, KaTeX 수식, Prism 코드 하이라이팅
 - YouTube · Vimeo · Loom · GoogleDrive · audio 임베드
 - 다중 named theme와 System 실시간 전환; 운영자 기본값·방문자 선택 분리, localStorage 영속

@@ -6,6 +6,9 @@ Tablog의 버전별 변경 이력. 프로젝트 개요는 [`../README.md`](../RE
 
 - 수동 운영 스테이징을 ARC `monolog-arc`의 암호화 export로 전환. 게시 웹 이미지를 pull해 태그 커밋·리비전 라벨·`linux/amd64` 런타임을 검증한 뒤 운영자 전송 키(RSA-4096)로 AES-256-GCM 암호화한 페이로드와 자격 없는 provenance만 1일 보관 artifact로 올리며, 평문 레이어는 업로드하지 않음. 복호화·attestation 검증·`docker load` 인수 절차를 운영 가이드에 문서화.
 
+- Docker Compose 프로덕션 서버가 `CONTENT_RECONCILE_INTERVAL_MINUTES`(기본 15분, `0`이면 비활성화) 주기로 콘텐츠 대조·임베딩·그래프·알림 유지보수를 내부에서 실행. 외부 호스트/GitHub 스케줄과 `/api/cron/content` 제거. 백그라운드 대조는 Pages Router ISR 경로를 즉시 무효화하지 않고 설정된 만료 후 방문 시 갱신.
+- GitHub Actions가 `main` 이미지 태그도 게시하고, 운영 Linux 호스트의 선택적 poller가 웹·임베딩 이미지 revision을 맞춰 확인한 뒤 자동 배포. GHCR 읽기 전용 자격증명, 상태 확인, 실패 시 이전 이미지 복구 지원.
+
 ---
 
 ## v1.21.19 — 2026-11-04

@@ -78,6 +78,7 @@ export type ReconcileOptions = {
   path?: string
   cold?: boolean
   maintenance?: boolean
+  deferPathRevalidation?: boolean
 }
 export type ReconcileResult = { completed: number; changed: number; pending: string[]; failed: string[]; revision: number; maintenancePending: number; notificationsPending: number }
 export async function reconcileContent(options: ReconcileOptions): Promise<ReconcileResult> {
@@ -256,6 +257,12 @@ export async function reconcileContent(options: ReconcileOptions): Promise<Recon
         await save(state)
       }
     }
+    if (options.deferPathRevalidation) {
+      // Scheduled background runs cannot call Pages Router ISR APIs. Pages
+      // refresh lazily under their configured revalidate interval instead.
+      for (const effect of state.effects) effect.paths = []
+      await save(state)
+    }
     if (state.initialized && options.revalidate) {
       const attemptedPaths = new Set<string>()
       for (const effect of [...state.effects]) {
@@ -289,7 +296,7 @@ export async function reconcileContent(options: ReconcileOptions): Promise<Recon
         failed.push(...embeddings.failed.map(id => `embedding:${id}`))
       } catch { failed.push("embeddings"); embeddingsPending = ["embeddings"] }
     }
-    if (state.initialized && options.revalidate && maintenance) {
+    if (state.initialized && maintenance && (options.revalidate || options.deferPathRevalidation)) {
       for (const effect of [...state.effects]) {
         if (Date.now() >= deadline) break
         let progressed = false

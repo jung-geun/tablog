@@ -64,7 +64,7 @@ jobs:
             VERSION="${REF_NAME#v}"
             echo "value=${IMAGE}:${VERSION},${IMAGE}:latest" >> "$GITHUB_OUTPUT"
           else
-            echo "value=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+            echo "value=${IMAGE}:latest,${IMAGE}:main" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Extract OCI labels

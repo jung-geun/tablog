@@ -160,23 +160,17 @@ Short readiness inference and full-document embedding backfill have different me
 
 Configure DNS and an HTTPS reverse proxy separately. `TRUSTED_PROXY_HOPS=0` ignores forwarded IP headers by default. To trust a proxy, set the correct hop count and `TRUSTED_PROXY_SECRET`, and make the proxy overwrite **`X-Monolog-Proxy-Secret`** with that secret. The header deliberately keeps its existing name; never forward a client-provided value. Keep private storage/model services off public ports.
 
-### 5. Reconcile Notion changes on Linux
+### 5. Reconcile Notion changes
 
-The host needs Bash, curl, `flock` (util-linux), and cron. From the checkout, perform the initial maintenance/backfill, then edit the deployment account's existing crontab:
+Docker Compose runs content reconciliation, embeddings, and graph maintenance inside the blog server. The default interval is 15 minutes; set `CONTENT_RECONCILE_INTERVAL_MINUTES` in `.env` to change it. Recreate the container to apply changes. Set it to `0` to disable scheduling.
 
-```bash
-bash scripts/reconcile-content-host.sh
-pwd
-crontab -e
+```env
+CONTENT_RECONCILE_INTERVAL_MINUTES=15
 ```
 
-Preserve existing jobs and add the following line only if this installation does not already have one. Replace `/absolute/path/tablog` with your actual checkout path, including an old path you chose to keep:
+The scheduler writes directly to the content store and does not send requests through Cloudflare. Pages Router ISR pages are not invalidated immediately; they regenerate on a later visit after `REVALIDATE_HOURS` expires. `/api/init` prepares public routes at startup. Check `[content-reconcile]` entries with `docker compose logs blog`.
 
-```cron
-*/15 * * * * /bin/bash "/absolute/path/tablog/scripts/reconcile-content-host.sh" 2>&1 | /usr/bin/logger -t tablog-content-sync
-```
-
-The script reads its own checkout's `.env` and calls the local port 3000 without putting the bearer token in cron. Inspect actual scheduled runs with `journalctl -t tablog-content-sync --since today --no-pager`; registering cron is not proof that it ran. Keep GitHub Actions scheduling as a best-effort backup, not a propagation guarantee.
+Production GHCR auto-updates require host-side setup. See [automatic `main` image deployment](docs/USAGE.md).
 
 ## Docker image paths and publication
 
@@ -205,7 +199,7 @@ Production images target `linux/amd64`. Before replacing existing services, pres
 
    **Q3: Why don't Notion posts update automatically?**
 
-   A3: Configure the Notion webhook and the host cron reconciliation described above. Inspect their actual responses and pending/failed work. GitHub Actions schedules can be delayed or skipped; ISR timing alone is not a guarantee of content propagation.
+   A3: Set `CONTENT_RECONCILE_INTERVAL_MINUTES` for the in-process production scheduler (Docker Compose defaults to 15 minutes), and configure the Notion webhook for immediate events. Check `docker compose logs blog` for reconciliation results. ISR pages regenerate lazily after `REVALIDATE_HOURS` expires.
 
    **Q4: What should I enter for NEXT_PUBLIC_GOOGLE_MEASUREMENT_ID and NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION?**
 

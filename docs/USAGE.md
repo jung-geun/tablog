@@ -272,7 +272,8 @@ NEXT_PUBLIC_GOOGLE_ADSENSE_DISABLE=false
 | `QDRANT_API_KEY` | — | 인증이 걸린 외부 Qdrant용 API key. 로컬/self-hosted Qdrant는 빈 값 |
 | `CACHE_NAMESPACE` | `monolog` | Redis 키 prefix. 동일 Redis를 staging·preview 등 여러 배포가 공유할 때 충돌 방지 |
 | `GRAPH_BUILD_TIMEOUT_MS` | `120000` | Notion graph complete-build 시간 제한(ms). 제한을 넘긴 partial graph는 Qdrant snapshot으로 저장하지 않음. 최대 `300000` |
-| `REVALIDATE_HOURS` | `6` | 소스 빌드 시 적용하는 ISR 재생성 주기(양의 정수 시간); 콘텐츠 대조 cron 주기와 별개 |
+| `REVALIDATE_HOURS` | `6` | 소스 빌드 시 적용하는 ISR 재생성 주기(양의 정수 시간); 백그라운드 콘텐츠 대조 주기와 별개 |
+| `CONTENT_RECONCILE_INTERVAL_MINUTES` | Docker Compose `15`; 그 외 미설정 | 프로덕션 Node.js 서버에서 자동 대조하는 간격(분). `0`이면 비활성화. `0`–`10080` 정수만 허용하며 컨테이너 재생성 후 적용 |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | 사이트 canonical·sitemap·RSS·IndexNow와 요청 origin 검증에 사용. 공개 배포에는 본인의 실제 주소를 **빌드 전에** 설정 |
 | `TRUSTED_PROXY_HOPS` | `0` | 기본값은 전달된 IP 헤더를 무시. 프록시 인증키 검증을 통과한 요청에서만 지정한 홉 수를 신뢰 |
 | `TRUSTED_PROXY_SECRET` | — | 프록시 신뢰를 켤 때만 필요. 프록시가 `X-Monolog-Proxy-Secret`을 강한 공유키로 덮어써야 하며 기본 배포에는 필요 없음 |
@@ -293,37 +294,24 @@ NEXT_PUBLIC_GOOGLE_ADSENSE_DISABLE=false
 
 상세 글의 날짜 레이블과 같은 날 수정일 생략은 `site.config.js`의 `timeZone`(기본 `Asia/Seoul`)을 따릅니다. `<time dateTime>`과 JSON-LD에는 UTC ISO 시각을 유지합니다. IndexNow·Discord의 실패는 콘텐츠 발행을 막지 않고 `notificationsPending`으로 별도 집계하며, 일시 장애는 최대 8회 시도 후 제거합니다. 영구 오류·제거된 설정은 즉시 제거합니다.
 
-### GitHub Actions Secrets (워크플로우 전용)
+### 콘텐츠 자동 동기화 (Docker Compose)
 
-[`revalidate.yml`](../.github/workflows/revalidate.yml) 워크플로우가 사용하는 GitHub Repository Secrets.
-등록: 저장소 → **Settings → Secrets and variables → Actions → New repository secret**
+프로덕션 Node.js 서버가 `CONTENT_RECONCILE_INTERVAL_MINUTES` 간격으로 Notion을 대조하고 임베딩·그래프 유지보수·알림을 처리합니다. Compose 기본값은 15분이며 `.env`에서 바꿀 수 있습니다. `0`은 비활성화입니다. 컨테이너가 실행 중일 때만 스케줄러가 동작합니다.
 
-| Secret | 필수 | 설명 |
-|---|---|---|
-| `REVALIDATE_URL` | 필수 | 운영 사이트 base URL (예: `https://your-site.com`, 끝 `/` 없음) |
-| `REVALIDATE_SECRET` | 필수 | 컨테이너의 `REVALIDATE_SECRET` 환경변수와 동일 값 |
-
-워크플로우는 15분마다 `POST /api/cron/content` 실행을 **예약**합니다. GitHub Actions의 schedule은 지연·누락될 수 있으므로 운영 동기화의 유일한 트리거로 사용하지 않습니다. 응답이 `200`이 아니면 실패하거나 남은 작업(`pending`)이 있다는 뜻이며, 남은 작업은 저장소에 보존되어 다음 실행에서 이어서 처리됩니다.
-
-### 운영 호스트 cron (Linux, 기본 트리거)
-
-운영 호스트에는 15분 cron을 등록하고 GitHub Actions는 보조 트리거로 유지합니다. `scripts/reconcile-content-host.sh`는 실행 위치와 무관하게 **스크립트가 속한 저장소 루트의 `.env`**를 읽고 로컬 `POST http://127.0.0.1:3000/api/cron/content`를 호출합니다. 호스트에 Bash·curl·`flock`(util-linux)이 필요하고 `.env`는 신뢰할 수 있는 shell-compatible 설정이어야 합니다. 토큰은 curl의 표준 입력으로 전달해 명령행에 노출하지 않습니다. 기존 캐시를 지우거나 실제 Notion 글을 수정하지 않습니다.
-
-최초 backfill은 저장소에서 `bash scripts/reconcile-content-host.sh`로 실행합니다. 기존 작업을 보존하며 배포 계정의 `crontab -e`에 다음 줄을 추가하고 `/absolute/path/tablog`는 본인의 저장소 절대 경로로 교체합니다. 기존 경로를 유지했다면 그 경로를 사용합니다. 호스트의 `cron` 서비스가 실행 중이어야 합니다.
-
-```cron
-*/15 * * * * /bin/bash "/absolute/path/tablog/scripts/reconcile-content-host.sh" 2>&1 | /usr/bin/logger -t tablog-content-sync
+```env
+CONTENT_RECONCILE_INTERVAL_MINUTES=15
 ```
 
-스크립트는 사용자 캐시 디렉터리의 `flock`으로 호스트 작업 중첩을 막고 요청을 최대 900초로 제한합니다. GitHub 호출과의 중첩은 콘텐츠 저장소의 lease가 제어합니다. 실패한 콘텐츠 작업은 저장소에 남아 다음 실행에서 이어서 처리됩니다.
+이 스케줄러는 앱 프로세스 안에서 실행되므로 GitHub Actions나 호스트 cron이 앱으로 주기 요청을 보낼 필요가 없습니다. 기존 서버의 `reconcile-content-host.sh` cron 줄은 제거하세요. 이 경로만을 위해 Cloudflare 예외를 추가했다면 함께 제거해도 됩니다. `REVALIDATE_URL` GitHub secret도 다른 workflow에서 쓰지 않을 때만 삭제하세요. 서버리스 또는 scale-to-zero 배포에서는 지속 실행이 보장되지 않으므로 이 설정을 사용하지 마세요. 이 동작은 Docker Compose의 상시 실행 컨테이너를 대상으로 합니다.
+
+배경 대조는 Pages Router의 ISR 경로를 즉시 무효화하지 않습니다. 콘텐츠 저장소와 유지보수 작업은 대조 주기에 맞춰 갱신되지만, 정적 페이지는 다음 방문 시 `REVALIDATE_HOURS` 만료 후 재생성됩니다. 즉시 경로 재생성이 필요한 발행에는 Notion webhook 또는 수동 `/api/revalidate`를 사용하세요.
+
+스케줄러 상태와 실패는 다음 로그에서 확인합니다.
 
 ```bash
-# 등록 상태와 실제 자동 호출 응답 확인 (토큰 출력 없음)
-crontab -l
-journalctl -t tablog-content-sync --since today --no-pager
+docker compose logs blog
 ```
 
-등록만으로 자동 갱신이 검증된 것은 아닙니다. 실제 quarter-hour 실행 로그의 `status=completed`, `pending=0`, `failed=0`과 `maintenancePending`·`notificationsPending`을 확인하고, 수동 호출 성공과 자동 실행 성공을 구분해 보고합니다. `/api/init`의 성공은 발행 경로 준비를 뜻하며 임베딩 완료가 아닙니다. 유지보수 후에도 그래프의 현재 문서 임베딩 진행 수를 함께 확인해야 전체 의미 색인 완료를 판단할 수 있습니다.
 
 ---
 
@@ -333,7 +321,6 @@ journalctl -t tablog-content-sync --since today --no-pager
 |---|---|---|
 | `GET\|POST /api/revalidate` | `Authorization: Bearer $REVALIDATE_SECRET` | 수동 증분 동기화. 캐시를 지우지 않고 바뀐 글과 영향받는 경로만 갱신. `path=/slug`는 해당 글 본문을 다시 확인, `path=/categories/x`·`/series/x`·컬렉션 경로는 그 경로만 재생성, `full=true`는 삭제·이동 감지용 전체 메타데이터 대조. 모든 작업이 끝나면 `200`, 남은 작업이 있으면 `503` |
 | `GET\|POST /api/init` | `Authorization: Bearer $REVALIDATE_SECRET` | 컨테이너 시작 워밍. 저장소가 비어 있으면 최초 동기화 후 모든 공개 경로를 재생성. AI 그래프 유지보수는 기다리지 않음(`maintenancePending`) |
-| `GET\|POST /api/cron/content` | `Authorization: Bearer $REVALIDATE_SECRET` | 정기 증분 동기화 + 24시간 전체 대조, 최초·변경 포스트 임베딩, 대기 그래프·ontology 작업과 IndexNow 제출 처리 |
 | `POST /api/notion-webhook` | `X-Notion-Signature` (HMAC-SHA256) | Notion 이벤트를 힌트로 받아 해당 페이지를 실시간 메타데이터로 다시 확인하고 발행. 같은 이벤트 ID는 한 번만 처리 |
 | `POST /api/cron/ontology` | `REVALIDATE_SECRET` Bearer | 누락·변경 문서 임베딩을 먼저 보충하고 LLM ontology를 갱신. `?force=1`은 LLM 캐시 우회이며 같은 문서를 다시 임베딩하지 않음 |
 | `GET /robots.txt` · `GET /llms.txt` | — | 크롤러 정책·사이트맵 위치, AI용 공개 글 색인 (공개 글 목록과 동기) |
@@ -389,7 +376,7 @@ docker compose ps
 docker compose logs -f blog embedding
 ```
 
-첫 기동은 모델 다운로드·CPU 추론과 Notion 콘텐츠 초기화를 포함합니다. Compose는 임베딩 서비스 readiness를 기다리고, blog entrypoint는 서버 기동 후 `/api/init`을 재시도해 공개 경로를 준비합니다. `/health`의 HTTP 프로세스 응답과 init 성공은 별개이며, init 재시도를 모두 실패해도 서버는 계속 실행하므로 **로그의 초기화 응답까지** 확인하세요. 이어서 `/api/cron/content`로 문서 임베딩 backfill을 진행합니다. 포트 3000 외의 서비스는 호스트에 공개하지 않습니다. DNS·HTTPS 리버스 프록시는 호스트에서 별도 구성합니다. `docker compose down -v`는 프로젝트의 named volume과 그 안의 내구성 콘텐츠·벡터 등을 삭제하므로 운영 갱신에 사용하지 않습니다.
+첫 기동은 모델 다운로드·CPU 추론과 Notion 콘텐츠 초기화를 포함합니다. Compose는 임베딩 서비스 readiness를 기다리고, blog entrypoint는 서버 기동 후 `/api/init`을 재시도해 공개 경로를 준비합니다. `/health`의 HTTP 프로세스 응답과 init 성공은 별개이며, init 재시도를 모두 실패해도 서버는 계속 실행하므로 **로그의 초기화 응답까지** 확인하세요. 이후 콘텐츠 대조·임베딩·그래프 유지보수는 `CONTENT_RECONCILE_INTERVAL_MINUTES` 주기로 blog 프로세스 안에서 실행됩니다. 포트 3000 외의 서비스는 호스트에 공개하지 않습니다. DNS·HTTPS 리버스 프록시는 호스트에서 별도 구성합니다. `docker compose down -v`는 프로젝트의 named volume과 그 안의 내구성 콘텐츠·벡터 등을 삭제하므로 운영 갱신에 사용하지 않습니다.
 
 외부 모니터링에는 홈페이지 대신 `https://<사이트 도메인>/health`를 사용하세요. 인증 없이 `GET`에 `200 OK`, `Content-Type: text/plain; charset=utf-8`, 본문 `ok\n`을 반환하며 `HEAD`도 지원합니다. 응답은 `Cache-Control: no-store`로 캐시하지 않습니다. 페이지 렌더링이나 Notion·Redis·Qdrant·임베딩 요청을 하지 않는 **liveness** 확인이며, 콘텐츠 초기화 완료나 모든 글·검색 기능의 정상 동작을 보장하지 않습니다. Compose와 entrypoint도 이 경로를 사용합니다. 리버스 프록시·CDN에서도 이 경로를 캐시하거나 홈페이지로 리다이렉트하지 않도록 설정하세요.
 
@@ -397,14 +384,50 @@ docker compose logs -f blog embedding
 curl --fail --max-time 5 'https://<사이트-도메인>/health'
 ```
 
+### GHCR `main` 이미지 자동 배포 (선택)
+
+GitHub Actions는 `main` push가 성공적으로 빌드되면 웹·임베딩 이미지를 각각 `:main` 태그로 게시합니다. 운영 Linux 호스트의 poller는 5분마다 두 태그를 확인하고, 두 이미지의 `org.opencontainers.image.revision`이 같은 경우에만 배포합니다. 버전 태그는 `:main`을 바꾸지 않으므로 자동 운영 업데이트는 `main` push만 반영합니다.
+
+먼저 새 `docker-compose.yml`과 `scripts/update-production-images.sh`를 기존 운영 checkout에 한 번 배포합니다. 운영 `.env`에 다음 설정을 추가하세요.
+
+```dotenv
+IMAGE_AUTO_UPDATE_ENABLED=true
+BLOG_IMAGE=ghcr.io/jung-geun/tablog:main
+EMBEDDING_IMAGE=ghcr.io/jung-geun/tablog-embedding:main
+GHCR_PULL_CREDENTIALS_FILE=/home/<deploy-user>/.config/tablog/ghcr-pull.env
+IMAGE_UPDATE_WAIT_SECONDS=2400
+```
+
+GitHub에서 해당 패키지의 읽기 전용 권한과 provenance attestation 읽기 권한을 가진 토큰을 만들고 별도 파일에 저장합니다. 운영 호스트에는 GitHub CLI(`gh`)도 설치해야 합니다. Poller는 토큰으로 Docker registry 로그인과 `gh attestation verify`를 수행합니다. `GHCR_PULL_TOKEN`을 `.env`에 넣지 마세요. Compose는 `.env` 전체를 blog 컨테이너에 전달합니다.
+
+```bash
+mkdir -p "$HOME/.config/tablog"
+cat > "$HOME/.config/tablog/ghcr-pull.env" <<'EOF'
+GHCR_PULL_USERNAME=<GitHub username>
+GHCR_PULL_TOKEN=<read-only package and attestation token>
+EOF
+chmod 600 "$HOME/.config/tablog/ghcr-pull.env"
+```
+
+배포 계정의 crontab에 5분 주기를 등록합니다.
+
+```cron
+*/5 * * * * /bin/bash "/absolute/path/tablog/scripts/update-production-images.sh" 2>&1 | /usr/bin/logger -t tablog-image-update
+```
+
+Poller는 임시 Docker 인증 디렉터리를 사용하고 종료 시 지웁니다. 각 이미지의 `linux/amd64` 플랫폼과 동일 source revision을 확인하고, GitHub-hosted runner에서 `docker-build.yml`이 만든 main-branch attestation을 검증한 뒤에만 Compose를 갱신합니다. `/health` 실패 시 이전 실행 이미지 ID로 롤백합니다. 실패한 같은 이미지 쌍은 새 게시 전까지 반복 배포하지 않습니다. 로그는 `journalctl -t tablog-image-update --since today --no-pager`로 확인하세요. `IMAGE_AUTO_UPDATE_ENABLED=false`로 끄고 crontab 항목을 제거할 수 있습니다.
+
+이 자동 경로는 이미지만 갱신합니다. Compose 파일이나 운영 설정 변경은 checkout에 별도로 반영해야 합니다. 처음 활성화할 때는 기존 프로젝트 이름·볼륨·이미지·설정 백업을 확인하세요. 자동 배포도 프로세스 liveness만으로 실제 Notion·Redis·Qdrant 기능까지 보장하지 않습니다.
+
 ### 기존 운영 GHCR 이미지 사용 (선택)
 
 웹 이미지 경로는 `ghcr.io/jung-geun/tablog`, 임베딩은 `ghcr.io/jung-geun/tablog-embedding`입니다. **두 패키지 모두 사용할 태그가 실제 게시됐는지와 패키지 접근 권한을 먼저 확인**하세요. 아래는 워크플로의 태그 규칙이지 게시 완료 목록이 아닙니다. 저장소 이름 변경만으로 이전 GHCR 패키지가 리다이렉트되거나 운영 이미지가 교체되지 않습니다. 처음 설치하는 일반 사용자는 위 소스 빌드를 사용하세요.
 
 | 태그 | 트리거 |
 |---|---|
-| `latest` | `main` 브랜치 push 또는 git 태그 `v*` push |
-| `X.Y.Z` | git 태그 `vX.Y.Z` push |
+| `latest` | `main` 브랜치 push 또는 `v*` 릴리스 태그 push |
+| `main` | `main` 브랜치 push; 자동 업데이트 호스트가 이 태그를 감시 |
+| `X.Y.Z` | `vX.Y.Z` 태그 push |
 
 - 아키텍처: `linux/amd64`
 - SLSA build provenance attestation 자동 첨부
@@ -415,7 +438,7 @@ GHCR CI 빌드에는 GitHub repository variables로 `NEXT_PUBLIC_SITE_URL`과 �
 
 필요한 태그·접근 권한을 확인한 뒤에만 `docker compose pull blog embedding`으로 가져오고 두 이미지의 OCI revision·대상 아키텍처를 확인합니다. 교체 전 기존 이미지 rollback 태그/고정, `.env`·Compose override·캐시 Redis RDB·콘텐츠 Redis AOF·Qdrant snapshot을 백업합니다. `embedding`이 모델 다운로드·실제 추론 warmup까지 healthy가 된 후 `docker compose up -d --no-build --wait --wait-timeout 2400`으로 교체합니다. rollback은 백업한 이미지 고정·Compose 설정으로 되돌려 같은 원래 프로젝트/볼륨을 사용하며, 볼륨을 삭제하거나 새 이미지 이름으로 기존 pin을 덮어쓰지 않습니다.
 
-서버 전용 `docker-compose.override.yml`이 `blog`·`redis`·`qdrant`를 외부 네트워크에 연결한다면 `content-redis`와 `embedding`도 blog가 도달 가능한 네트워크에 지정해야 합니다. 첫 배포는 새 서비스를 먼저 준비하고 기존 안내대로 후보 blog에서 `/api/init`과 실제 페이지를 확인한 뒤 교체합니다. `/api/init`은 임베딩을 기다리지 않으므로 교체 후 `/api/cron/content`로 첫 backfill을 진행하고 `pending`·`failed`·`maintenancePending`이 0인지 확인합니다.
+서버 전용 `docker-compose.override.yml`이 `blog`·`redis`·`qdrant`를 외부 네트워크에 연결한다면 `content-redis`와 `embedding`도 blog가 도달 가능한 네트워크에 지정해야 합니다. 첫 배포는 새 서비스를 먼저 준비하고 기존 안내대로 후보 blog에서 `/api/init`과 실제 페이지를 확인한 뒤 교체합니다. `/api/init`은 임베딩을 기다리지 않으므로 `CONTENT_RECONCILE_INTERVAL_MINUTES` 설정으로 자동 backfill이 진행되는지 로그와 `pending`·`failed`·`maintenancePending` 수치로 확인합니다.
 
 ### EmbeddingGemma · Qdrant · ontology
 
@@ -423,13 +446,13 @@ Compose의 `embedding`은 내부 네트워크의 `linux/amd64` CPU 서비스입�
 
 모델은 [공식 EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)의 고정 revision `914f7f89142e33e77833254d9c9b90c3cef7303b`, CPU float32, 768차원입니다. 첫 실행은 약 1.49GB의 결합 safetensors를 내려받지만 vision/audio encoder는 생성하지 않습니다. `/health`는 다운로드와 실제 추론 성공 뒤에만 ready를 반환하며, 초기 health grace는 30분입니다. 긴 글은 8192-token 창마다 처리하므로 메모리·CPU 여유가 필요합니다. ARM 호스트에서는 선언된 amd64 서비스의 에뮬레이션이 필요합니다.
 
-readiness의 짧은 query 추론과 긴 문서 backfill은 메모리 사용량이 다르므로 실제 문서 길이에 맞는 Docker/서버 메모리를 확보하세요. 재시작·OOM은 `docker compose logs embedding`과 Docker 호스트 로그로 확인합니다. 키를 추가하거나 이미지만 반복 재시작해도 메모리 부족은 해결되지 않습니다. 환경을 보완한 뒤 유지보수를 다시 실행해 `/api/cron/content`의 `pending=0`, `failed=0`, `maintenancePending=0`과 그래프의 현재 문서 임베딩 진행 수를 함께 확인하세요. `/api/init`은 임베딩을 실행하지 않으므로 그 응답이나 모델 서비스의 healthy만으로 전체 backfill 완료를 판단하면 안 됩니다.
+readiness의 짧은 query 추론과 긴 문서 backfill은 메모리 사용량이 다르므로 실제 문서 길이에 맞는 Docker/서버 메모리를 확보하세요. 재시작·OOM은 `docker compose logs embedding`과 Docker 호스트 로그로 확인합니다. 키를 추가하거나 이미지만 반복 재시작해도 메모리 부족은 해결되지 않습니다. 환경을 보완한 뒤 다음 `CONTENT_RECONCILE_INTERVAL_MINUTES` 실행에서 `pending=0`, `failed=0`, `maintenancePending=0`과 그래프의 현재 문서 임베딩 진행 수를 함께 확인하세요. `/api/init`은 임베딩을 실행하지 않으므로 그 응답이나 모델 서비스의 healthy만으로 전체 backfill 완료를 판단하면 안 됩니다.
 
 공개 의미 검색은 IP당 분당 6회·웹 프로세스당 동시 1개로 제한하며 초과 시 `429`와 `Retry-After`를 반환합니다. 모델 서비스는 문서 유지보수에 우선권과 최대 1개 대기 예약을 부여하고 추가 요청을 `503`으로 거절합니다. health 요청은 추론 대기열과 분리하며, 웹의 query 추론은 30초·document 추론은 10분 뒤 중단합니다.
 
 `QDRANT_URL`은 Compose의 `http://qdrant:6333`, 네이티브 개발의 `http://localhost:6333`을 사용합니다. 새 768d 컬렉션은 예전 OpenAI 1536d `posts` 컬렉션을 읽거나 덮어쓰지 않습니다. 동일 제목·본문·모델 revision은 정기 재검증이나 LLM 강제 갱신에서도 재임베딩하지 않습니다. 최초 backfill·제목·본문 수정만 계산하고 slug·태그 수정은 payload만 갱신합니다.
 
-호스트 cron `/api/cron/content`가 임베딩과 증분 작업을 처리합니다. 초기화·webhook·수동 revalidate는 경로 발행을 먼저 마치며 다음 유지보수가 임베딩을 채웁니다. 수동 ontology 갱신도 같은 콘텐츠 잠금을 사용해 동시 발행·벡터 쓰기를 직렬화합니다. Meaning 검색과 RightRail 유사 글은 Anthropic 키 없이 동작하고, 논리 온톨로지 추출만 `ANTHROPIC_API_KEY`가 필요합니다. 수동 온톨로지 갱신:
+blog 프로세스의 스케줄러가 임베딩과 증분 작업을 처리합니다. 초기화·webhook·수동 revalidate는 경로를 즉시 발행하고, 백그라운드 스케줄러는 저장소의 변경분과 유지보수를 처리합니다. 스케줄러는 ISR 캐시 경로를 직접 무효화하지 않으므로 정적 페이지는 방문 시 `REVALIDATE_HOURS` 만료 후 재생성됩니다. 수동 ontology 갱신도 같은 콘텐츠 잠금을 사용해 동시 발행·벡터 쓰기를 직렬화합니다. Meaning 검색과 RightRail 유사 글은 Anthropic 키 없이 동작하고, 논리 온톨로지 추출만 `ANTHROPIC_API_KEY`가 필요합니다. 수동 온톨로지 갱신:
 
 ```bash
 curl -X POST "https://your-site.com/api/cron/ontology" \

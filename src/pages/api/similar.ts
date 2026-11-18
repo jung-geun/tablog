@@ -34,7 +34,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!vector) {
     return res.status(202).json({
       ready: false,
-      message: "Post embedding is pending content reconciliation. Trigger /api/cron/content.", 
+      message: "Post embedding is pending scheduled content reconciliation.",
     })
   }
 

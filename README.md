@@ -79,9 +79,9 @@ Name 검색과 관계 배치는 임베딩 의미 검색과 구분합니다. Mean
 About의 글 활동·GitHub 기여 달력은 저장소에 포함한 **Bklit UI Heatmap 소스**를 사용합니다. 3D 그래프와 온톨로지를 Bklit로 대체한 것은 아닙니다. 원본 건수·기여 레벨·날짜를 유지하고 작은 화면에서는 달력 안에서 가로 스크롤합니다.
 
 ### 내구성 게시본 · 증분 콘텐츠 동기화
-Notion webhook과 운영 호스트의 15분 cron 대조가 바뀐 글과 영향받는 경로를 갱신합니다. 게시본은 만료되는 캐시와 별개인 콘텐츠 레지스트리에 저장하고, slug 변경은 이전 주소의 308 리다이렉트로 연결합니다. 전체 Compose는 별도 AOF Redis를, 네이티브 단일 호스트 개발은 `.content-state`를 사용합니다.
+Notion webhook은 변경 즉시 글을 처리하며, 프로덕션 blog 서버 내부 스케줄러는 주기적으로 전체 콘텐츠를 대조합니다. 게시본은 만료되는 캐시와 별개인 콘텐츠 레지스트리에 저장하고, slug 변경은 이전 주소의 308 리다이렉트로 연결합니다. Compose는 별도 AOF Redis를, 네이티브 단일 호스트 개발은 `.content-state`를 사용합니다.
 
-Docker entrypoint는 standalone Node 서버를 시작한 뒤 `/api/init`으로 게시본과 공개 경로를 준비합니다. 첫 초기화·이미지 다운로드·모델 backfill에는 시간이 필요하며 GitHub Actions schedule은 지연·누락 가능한 보조 트리거입니다. Notion 이미지 프록시는 만료된 URL 갱신·중복 요청 병합·디스크 캐시를 제공하고, 댓글·방문자 통계·광고·Analytics는 각각의 선택 설정과 준비 상태를 따릅니다.
+Docker entrypoint는 standalone Node 서버를 시작한 뒤 `/api/init`으로 게시본과 공개 경로를 준비합니다. 첫 초기화·이미지 다운로드·모델 backfill에는 시간이 필요하며, 콘텐츠 동기화는 blog 프로세스 내부 스케줄러가 처리합니다. Notion 이미지 프록시는 만료된 URL 갱신·중복 요청 병합·디스크 캐시를 제공하고, 댓글·방문자 통계·광고·Analytics는 각각의 선택 설정과 준비 상태를 따릅니다.
 
 광고는 **오버레이 전용 자동 모드**와 명시적인 **수동 배치 모드**를 구분하고 필수 설정이 없으면 비활성화합니다. 소스 설정이 Google 계정의 광고 형식을 바꾸거나 실제 광고 게재를 보장하지는 않습니다. 계정 확인·이미지 프록시·댓글 등의 준비 사항은 [운영 가이드](docs/USAGE.md)를 따릅니다.
 
@@ -169,23 +169,17 @@ docker compose logs -f blog embedding
 
 공개 도메인은 DNS와 HTTPS 리버스 프록시를 별도로 연결하세요. 기본값 `TRUSTED_PROXY_HOPS=0`은 전달된 IP 헤더를 신뢰하지 않습니다. 프록시 뒤에서 방문자별 IP 제한을 사용하려면 홉 수와 공유 인증키를 함께 설정하고 프록시가 인증 헤더를 덮어쓰게 해야 합니다. 상세 설정은 [`docs/USAGE.md`](docs/USAGE.md)를 따릅니다.
 
-### 5. Notion 변경 자동 반영 (Linux 서버)
+### 5. Notion 변경 자동 반영
 
-호스트에 Bash·curl·`flock`(util-linux)·cron이 있어야 합니다. 저장소 디렉터리에서 최초 유지보수를 실행합니다. 공개 모델에는 API 키가 필요하지 않으며, 이 단계가 임베딩 backfill도 처리합니다.
+Docker Compose는 blog 서버 안에서 콘텐츠 대조·임베딩·그래프 유지보수를 주기 실행합니다. 기본 주기는 15분이며 `.env`의 `CONTENT_RECONCILE_INTERVAL_MINUTES`로 조정합니다. 서버를 재생성하면 적용됩니다. `0`은 비활성화입니다.
 
-```bash
-bash scripts/reconcile-content-host.sh
-pwd
-crontab -e
+```env
+CONTENT_RECONCILE_INTERVAL_MINUTES=15
 ```
 
-기존 cron은 지우지 말고 아래 한 줄을 추가합니다. `/absolute/path/tablog`는 `pwd`로 확인한 **본인의 절대 경로**로 교체하세요. 기존 설치 경로를 유지했다면 그 경로를 사용합니다.
+스케줄러는 Cloudflare를 통하지 않고 콘텐츠 저장소에 직접 반영합니다. Next.js Pages Router의 ISR 페이지는 변경 경로를 즉시 무효화하지 않으며, 방문 시 `REVALIDATE_HOURS` 만료 후 재생성됩니다. `/api/init`은 첫 기동 시 공개 경로를 준비합니다. 상태는 `docker compose logs blog`의 `[content-reconcile]` 로그에서 확인하세요.
 
-```cron
-*/15 * * * * /bin/bash "/absolute/path/tablog/scripts/reconcile-content-host.sh" 2>&1 | /usr/bin/logger -t tablog-content-sync
-```
-
-스크립트는 자신의 저장소 `.env`에서 키를 읽어 로컬 3000번 포트에 요청하므로 cron에 비밀키를 적지 않습니다. 실제 자동 실행은 `journalctl -t tablog-content-sync --since today --no-pager`로 확인합니다. 운영 중 `docker compose down -v`로 콘텐츠·벡터·모델 볼륨을 삭제하지 마세요. 선택 기능과 Notion 스키마·백업·기존 운영 이미지 배포는 [`docs/USAGE.md`](docs/USAGE.md)를 참고하세요.
+운영 서버의 GHCR 자동 업데이트는 별도 설정이 필요합니다. `main` 이미지 자동 배포는 [`docs/USAGE.md`](docs/USAGE.md)를 참고하세요.
 
 ---
 
