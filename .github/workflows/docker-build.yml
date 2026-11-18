@@ -13,11 +13,6 @@ on:
         required: true
         default: 1.21.19
         type: string
-      make-images-public:
-        description: Make both GHCR packages public; anyone can pull the images
-        required: false
-        default: false
-        type: boolean
 
 env:
   REGISTRY: ghcr.io
@@ -132,7 +127,7 @@ jobs:
     # RSA-4096 transfer key below (SPKI SHA-256 fingerprint
     # a68f015ac6cf540bc63c8622d07f1f91917e8ad7eb528c53bf309e739cfd4de6).
     # Only *.enc + envelope + credential-free provenance upload, never plaintext.
-    if: github.event_name == 'workflow_dispatch' && !inputs.make-images-public
+    if: github.event_name == 'workflow_dispatch'
     runs-on: monolog-arc
     timeout-minutes: 60
     permissions:
@@ -231,21 +226,3 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  make-images-public:
-    if: github.event_name == 'workflow_dispatch' && inputs.make-images-public
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      - name: Publish GHCR packages publicly
-        env:
-          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          PACKAGE="${REPOSITORY#*/}"
-          for NAME in "$PACKAGE" "${PACKAGE}-embedding"; do
-            gh api --method PATCH "/user/packages/container/${NAME}" --field visibility=public >/dev/null
-            VISIBILITY=$(gh api "/user/packages/container/${NAME}" --jq .visibility)
-            [ "$VISIBILITY" = public ] || { echo "Package $NAME did not become public"; exit 1; }
-          done
